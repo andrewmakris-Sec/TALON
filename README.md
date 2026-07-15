@@ -101,6 +101,8 @@ Some data (live SentinelOne vuln counts, VirusTotal lookups) can't be fetched di
 | `GET /ioc?value=X` | VirusTotal verdict for a hash/IP/domain (type auto-detected) |
 
 **Setup:**
+
+Option A — environment variables (re-run in every new terminal session):
 ```bash
 export SENTINELONE_URL="https://<your-console>.sentinelone.net"
 export SENTINELONE_TOKEN="<your token>"
@@ -108,7 +110,17 @@ export VIRUSTOTAL_API_KEY="<your key>"   # optional — enables IOC Quick-Check
 pip install requests
 python3 sentinelone_local_agent.py
 ```
-Leave it running in a terminal. TALON's SYNC S1 FROM LOCAL AGENT and IOC Quick-Check buttons will work while it's up, and show a clear error if it isn't.
+
+Option B — `.env` file (set once, never re-type it):
+```bash
+cp .env.example .env
+# edit .env and fill in your real SENTINELONE_URL / SENTINELONE_TOKEN / VIRUSTOTAL_API_KEY
+pip install requests
+python3 sentinelone_local_agent.py
+```
+`.env` is git-ignored — it never gets committed, even if you `git add -A` by accident. Real exported environment variables always take priority over `.env` if both are set.
+
+Leave the agent running in a terminal. TALON's SYNC S1 FROM LOCAL AGENT and IOC Quick-Check buttons will work while it's up, and show a clear error if it isn't.
 
 **Auto-start (macOS only, optional):** `install_agent_service.sh` registers the agent as a `launchd` service so it starts automatically on login instead of needing a terminal window open. Prompts for your credentials once, builds the service file with Python's `plistlib` (safe against special characters in tokens), and starts it immediately. See the script's own header comments for the full explanation and how to check logs / uninstall.
 

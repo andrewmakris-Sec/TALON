@@ -12,9 +12,15 @@ Endpoints (see README.md "Local Agent" section):
   GET /ioc?value=<hash|ip|fqdn> -> VirusTotal verdict for a hash/IP/domain
 
 Setup:
-  export SENTINELONE_URL="https://<your-console>.sentinelone.net"
-  export SENTINELONE_TOKEN="<your API token>"
-  export VIRUSTOTAL_API_KEY="<your key>"   # optional — enables IOC Quick-Check
+  Either export the three variables below in your shell each session, or copy
+  .env.example to .env (same folder as this script) and fill in real values —
+  .env is git-ignored, so credentials never get committed. .env takes lower
+  priority than real exported env vars, so `export FOO=bar` always wins.
+
+    SENTINELONE_URL="https://<your-console>.sentinelone.net"
+    SENTINELONE_TOKEN="<your API token>"
+    VIRUSTOTAL_API_KEY="<your key>"   # optional — enables IOC Quick-Check
+
   pip install requests
   python3 sentinelone_local_agent.py
 
@@ -39,6 +45,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import requests
+
+
+def _load_dotenv():
+    """Load KEY=VALUE pairs from a .env file next to this script, without
+    overriding anything already set in the real environment (a real `export`
+    always wins over .env). No third-party dependency — the format is simple
+    enough to hand-parse, and this keeps the "pip install requests" promise
+    in the README accurate.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv()
 
 HOST = "127.0.0.1"
 PORT = 8787
