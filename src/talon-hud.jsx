@@ -423,7 +423,7 @@ function useLiveS1Count() {
       } catch { if (alive) setLive(null); }
     };
     poll();
-    const id = setInterval(poll, 20000);
+    const id = setInterval(poll, 60000);
     return () => { alive = false; clearInterval(id); };
   }, []);
   return live;

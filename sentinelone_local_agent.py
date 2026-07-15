@@ -48,7 +48,8 @@ SENTINELONE_TOKEN = os.environ.get("SENTINELONE_TOKEN", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 
 S1_APPLICATIONS_PATH = "/web/api/v2.1/installed-applications"
-S1_RISK_LEVELS = "critical,high,medium,low"  # excludes "none" (non-vulnerable) apps
+S1_RISK_LEVELS = ["critical", "high", "medium", "low"]  # excludes "none" (non-vulnerable) apps
+S1_VALID_SEVERITIES = {"Critical", "High", "Medium", "Low"}
 S1_PAGE_LIMIT = 1000
 S1_MAX_ROWS = 20000  # safety cap so a huge tenant can't hang the request forever
 
@@ -130,7 +131,13 @@ def fetch_s1_vulns():
         items = body.get("data", [])
         if not isinstance(items, list):
             raise AgentError(f"unexpected SentinelOne response shape (no 'data' array): {str(body)[:300]}")
-        rows.extend(_extract_row(r) for r in items)
+        # server-side riskLevels filtering is best-effort (exact query param format
+        # can vary); always re-check client-side so a "none"-risk app never slips
+        # through even if the server ignored/mis-parsed the filter.
+        for r in items:
+            row = _extract_row(r)
+            if row["Severity"] in S1_VALID_SEVERITIES:
+                rows.append(row)
 
         pagination = body.get("pagination") or {}
         cursor = pagination.get("nextCursor")
