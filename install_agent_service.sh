@@ -122,6 +122,45 @@ if [[ -z "$S1_URL" || -z "$S1_TOKEN" ]]; then
   exit 1
 fi
 
+# catch the exact mistake of pasting the literal example placeholder (or one
+# still left over in .env) before it ever gets installed as a live service
+if [[ "$S1_URL" == *"<"* || "$S1_URL" == *"your-console"* ]]; then
+  echo "Error: '$S1_URL' looks like the placeholder from .env.example, not a real console URL." >&2
+  echo "Edit .env (or retype it here) with your actual SentinelOne console, e.g.:" >&2
+  echo "  SENTINELONE_URL=https://usea1-pondurance.sentinelone.net" >&2
+  exit 1
+fi
+if [[ "$S1_TOKEN" == *"<"* || "$S1_TOKEN" == *"your"*"token"* ]]; then
+  echo "Error: the token you entered looks like a placeholder, not a real API token." >&2
+  exit 1
+fi
+
+echo "Verifying SentinelOne connectivity before installing the service..."
+if ! S1_URL="$S1_URL" S1_TOKEN="$S1_TOKEN" "$PYTHON_BIN" <<'PYEOF'
+import os, sys
+import requests
+url = os.environ["S1_URL"]
+token = os.environ["S1_TOKEN"]
+try:
+    r = requests.get(f"{url}/web/api/v2.1/installed-applications",
+                      headers={"Authorization": f"ApiToken {token}"},
+                      params={"limit": 1}, timeout=10)
+except requests.RequestException as ex:
+    print(f"Could not reach {url} — {ex}", file=sys.stderr)
+    sys.exit(1)
+if r.status_code in (401, 403):
+    print(f"SentinelOne rejected the token ({r.status_code}) — check SENTINELONE_TOKEN.", file=sys.stderr)
+    sys.exit(1)
+if not r.ok:
+    print(f"SentinelOne returned {r.status_code}: {r.text[:200]}", file=sys.stderr)
+    sys.exit(1)
+print("SentinelOne connectivity OK")
+PYEOF
+then
+  echo "Error: not installing the service with unverified credentials. Fix the above and re-run." >&2
+  exit 1
+fi
+
 mkdir -p "$LOG_DIR"
 mkdir -p "$(dirname "$PLIST_PATH")"
 
