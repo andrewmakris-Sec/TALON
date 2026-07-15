@@ -407,28 +407,6 @@ function AgentStatusTag() {
   return <span className={`agent-tag ${cls}`}><span className="agent-dot" />{label}</span>;
 }
 
-/* live S1 count on the dashboard hub tile — polls the local agent directly so the hub
-   reflects current SentinelOne vuln counts without requiring a manual sync + snapshot. */
-function useLiveS1Count() {
-  const [live, setLive] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    const poll = async () => {
-      try {
-        const res = await fetch("http://localhost:8787/vulns", { cache: "no-store" });
-        if (!res.ok) throw new Error(`agent responded ${res.status}`);
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        if (alive) setLive(computeS1Aggregate(data.rows || []).total);
-      } catch { if (alive) setLive(null); }
-    };
-    poll();
-    const id = setInterval(poll, 60000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
-  return live;
-}
-
 function computeS1Aggregate(rows) {
   const sample = rows[0] || {};
   const keyFor = (names) => Object.keys(sample).find((k) => names.some((n) => k.toLowerCase().includes(n)));
@@ -468,7 +446,6 @@ function VulnDelta() {
   const [note, setNote] = useState(""); const [ready, setReady] = useState(false);
   useEffect(() => { (async () => { setHist(await store.get("mo:vulns", [])); setReady(true); })(); }, []);
   useEffect(() => { if (ready) store.set("mo:vulns", hist); }, [hist, ready]);
-  const [driveSyncing, setDriveSyncing] = useState(false);
   const aggregateS1Rows = (rows, sourceLabel) => {
     const { total, sev, cves, apps, epKey, sevKey, cveKey, appKey } = computeS1Aggregate(rows);
     setS1(String(total)); setS1Sev(sev); setS1Cves(cves.length ? cves : null); setS1Apps(apps.length ? apps : null);
@@ -494,21 +471,6 @@ function VulnDelta() {
       if (which === "s1") applyS1Workbook(wb, f.name); else applyIruWorkbook(wb, f.name);
     } catch (ex) { setNote("Import failed: " + ex.message); }
     e.target.value = "";
-  };
-  const syncS1FromLocalAgent = async () => {
-    if (driveSyncing) return;
-    setDriveSyncing(true); setNote("Calling local agent at localhost:8787…");
-    try {
-      const res = await fetch("http://localhost:8787/vulns");
-      if (!res.ok) throw new Error(`agent responded ${res.status}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      aggregateS1Rows(data.rows || [], "Local agent");
-    } catch (ex) {
-      setNote("Local agent sync failed — " + (ex.message || "is sentinelone_local_agent.py running?"));
-    } finally {
-      setDriveSyncing(false);
-    }
   };
   const snapshot = () => {
     if (!iru && !s1) { setNote("Enter or import counts first"); return; }
@@ -567,10 +529,6 @@ function VulnDelta() {
         <input className="vin" value={s1} onChange={(e) => { setS1(e.target.value); setS1Sev(null); setS1Cves(null); setS1Apps(null); }} placeholder="count" inputMode="numeric" />
         <label className="vfile">FILE<input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => importFile(e, "s1")} hidden /></label>
       </div>
-      <div className="tk-btns vexport">
-        <button className="mini-btn wide" disabled={driveSyncing} onClick={syncS1FromLocalAgent}>{driveSyncing ? "SYNCING…" : "SYNC S1 FROM LOCAL AGENT"}</button>
-      </div>
-      <div className="agent-tag-row"><AgentStatusTag /></div>
       {cur?.s1Sev && <div className="log-metrics">
         <span className="lm crit">CRIT {cur.s1Sev.Critical || 0}{arrow(dSev("Critical"))}</span>
         <span className="lm err">HIGH {cur.s1Sev.High || 0}{arrow(dSev("High"))}</span>
@@ -1713,15 +1671,11 @@ function ProcedureWriter() {
   );
 }
 
-function MOTile({ icon: I, label, sub, stat, live, onOpen }) {
+function MOTile({ icon: I, label, sub, stat, onOpen }) {
   return (
     <button className="motile" onClick={onOpen}>
       <span className="motile-ic"><I size={22} /></span>
-      <div className="motile-body">
-        <span className="motile-lbl">{label}</span>
-        <span className="motile-sub">{sub}</span>
-        {live != null && <span className="motile-live"><span className="motile-live-dot" /> S1 LIVE {live}</span>}
-      </div>
+      <div className="motile-body"><span className="motile-lbl">{label}</span><span className="motile-sub">{sub}</span></div>
       {stat != null && <span className="motile-stat">{stat}</span>}
       <span className="motile-go">OPEN ▸</span>
     </button>
@@ -1742,7 +1696,6 @@ const MO_TOOLS = [
 function MODashboard() {
   const [view, setView] = useState(null);
   const [stats, setStats] = useState({ vuln: null, base: 0, hunts: 0, pki: 0, vulnfix: 0, proc: 0, ioc: 0 });
-  const liveS1 = useLiveS1Count();
   useEffect(() => { (async () => {
     const v = await store.get("mo:vulns", []); const sy = await store.get("mo:syslog", { hist: [] }); const hu = await store.get("mo:hunts", []); const pk = await store.get("mo:pki", []); const vf = await store.get("mo:vulnfixes", []); const pr = await store.get("mo:procedures", []); const ic = await store.get("mo:iocchecks", []);
     const cur = v[v.length - 1];
@@ -1752,7 +1705,7 @@ function MODashboard() {
     <main className="mo-wrap">
       <div className={view ? "hide" : "mo-hub"}>
         <aside className="rail">
-          <MOTile icon={ShieldAlert} label="VULN DELTA" sub="IRU · S1 trend" stat={stats.vuln != null ? stats.vuln : "—"} live={liveS1} onOpen={() => setView("vuln")} />
+          <MOTile icon={ShieldAlert} label="VULN DELTA" sub="IRU · S1 trend" stat={stats.vuln != null ? stats.vuln : "—"} onOpen={() => setView("vuln")} />
           <MOTile icon={ShieldCheck} label="VULN ANALYZER" sub="CVE remediation" stat={stats.vulnfix} onOpen={() => setView("vulnfix")} />
           <MOTile icon={Ticket} label="TICKET OPS" sub="Pondurance · S1 · IT · InfoSec" stat={null} onOpen={() => setView("ticket")} />
           <MOTile icon={ClipboardList} label="PKI REPORT" sub="weekly checklist" stat={stats.pki} onOpen={() => setView("pki")} />
@@ -1944,8 +1897,6 @@ const CSS = `
 .motile-lbl{font-family:var(--fD);font-size:13px;font-weight:700;letter-spacing:.04em;color:var(--acc)}
 .motile-sub{font-family:var(--fM);font-size:9px;letter-spacing:.02em;color:var(--dim);margin-top:3px}
 .motile-stat{font-family:var(--fD);font-size:24px;font-weight:700;background:linear-gradient(135deg,var(--acc2),var(--acc));-webkit-background-clip:text;background-clip:text;color:transparent}
-.motile-live{display:inline-flex;align-items:center;gap:5px;margin-top:3px;font-family:var(--fM);font-size:8.5px;letter-spacing:.05em;color:#7CFFB2}
-.motile-live-dot{width:6px;height:6px;border-radius:50%;background:#7CFFB2;box-shadow:0 0 6px #7CFFB2;flex:none}
 .motile-go{position:absolute;bottom:8px;right:14px;font-family:var(--fM);font-size:8px;letter-spacing:.06em;color:var(--dim)}
 .mo-page{max-width:1040px;margin:0 auto}
 .mo-pagehd{display:flex;align-items:center;gap:16px;margin-bottom:18px}

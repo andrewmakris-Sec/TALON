@@ -35,9 +35,7 @@ TALON uses a small persistent key-value store (`window.storage`, wrapped by a `s
 ## Widgets
 
 ### Vuln Delta
-Tracks IRU (Kandji) and S1 (SentinelOne) vulnerability counts over time. Import via manual entry, a `.xlsx`/`.csv` file, or the **SYNC S1 FROM LOCAL AGENT** button (see [Local Agent](#local-agent) below). Auto-detects Endpoint/Application/Severity/CVE columns from whatever file you give it, dedupes by Endpoint×Application, and tracks severity breakdown + top CVEs/apps snapshot-over-snapshot. Exports full history to XLSX.
-
-While the local agent is running, the dashboard hub tile for Vuln Delta also shows a live **S1 LIVE `<count>`** badge — the current deduped active S1 vulnerability count pulled straight from SentinelOne, refreshed automatically every ~20s. This is independent of the manual snapshot history: it doesn't require opening the widget or clicking sync, it just reflects what SentinelOne has right now. Manual **SYNC S1 FROM LOCAL AGENT** + **LOG SNAPSHOT** inside the widget is still how you capture a point-in-time snapshot into history for deltas/exports.
+Tracks IRU (Kandji) and S1 (SentinelOne) vulnerability counts over time. Import via manual entry or a `.xlsx`/`.csv` file. Auto-detects Endpoint/Application/Severity/CVE columns from whatever file you give it, dedupes by Endpoint×Application, and tracks severity breakdown + top CVEs/apps snapshot-over-snapshot. Exports full history to XLSX.
 
 ### Vuln Analyzer
 Enter a CVE ID, affected app, and severity (plus an "actively exploited in the wild" toggle). Produces a standard SLA and remediation checklist:
@@ -85,44 +83,7 @@ Weekly checklist covering S1/IRU vuln counts, compliance scores, and free-text s
 Fill in Purpose / Scope / Trigger / Prerequisites / Procedure steps / Rollback / References as separate fields; **BUILD DRAFT FROM SECTIONS** assembles them into a formatted document with ALL-CAPS section headers. The draft is freely editable by hand afterward. Exports to DOCX or a printable HTML (for Save-as-PDF). Saved procedures are reloadable for editing.
 
 ### IOC Quick-Check
-Paste a hash, IP, or domain (type auto-detected). Calls the [Local Agent's](#local-agent) `/ioc` endpoint, which queries VirusTotal directly and returns a malicious/suspicious/harmless/undetected breakdown, plus one-click links to VirusTotal, and for IPs, AbuseIPDB and Shodan. Requires the local agent running with `VIRUSTOTAL_API_KEY` set — shows a clear failure message if it isn't.
-
----
-
-## Local Agent
-
-Some data (live SentinelOne vuln counts, VirusTotal lookups) can't be fetched directly from the browser — vendor APIs don't allow cross-origin requests from a webpage, regardless of API key. `sentinelone_local_agent.py` solves this: it's a small Python HTTP server that runs on your own machine, holds your API keys, and exposes a few `localhost`-only endpoints the dashboard can call safely.
-
-**Endpoints it serves** (`http://localhost:8787`):
-| Endpoint | Returns |
-|---|---|
-| `GET /health` | `{"status":"ok","services":{"sentinelone":bool,"virustotal":bool}}` — used by the green/red status dot next to sync buttons |
-| `GET /vulns` | SentinelOne application-risk rows, normalized to `{Endpoint, Application, Severity, Status, CVE}` |
-| `GET /ioc?value=X` | VirusTotal verdict for a hash/IP/domain (type auto-detected) |
-
-**Setup:**
-
-Option A — environment variables (re-run in every new terminal session):
-```bash
-export SENTINELONE_URL="https://<your-console>.sentinelone.net"
-export SENTINELONE_TOKEN="<your token>"
-export VIRUSTOTAL_API_KEY="<your key>"   # optional — enables IOC Quick-Check
-pip install requests
-python3 sentinelone_local_agent.py
-```
-
-Option B — `.env` file (set once, never re-type it):
-```bash
-cp .env.example .env
-# edit .env and fill in your real SENTINELONE_URL / SENTINELONE_TOKEN / VIRUSTOTAL_API_KEY
-pip install requests
-python3 sentinelone_local_agent.py
-```
-`.env` is git-ignored — it never gets committed, even if you `git add -A` by accident. Real exported environment variables always take priority over `.env` if both are set.
-
-Leave the agent running in a terminal. TALON's SYNC S1 FROM LOCAL AGENT and IOC Quick-Check buttons will work while it's up, and show a clear error if it isn't.
-
-**Auto-start (macOS only, optional):** `install_agent_service.sh` registers the agent as a `launchd` service so it starts automatically on login instead of needing a terminal window open. Prompts for your credentials once, builds the service file with Python's `plistlib` (safe against special characters in tokens), and starts it immediately. See the script's own header comments for the full explanation and how to check logs / uninstall.
+Paste a hash, IP, or domain (type auto-detected). Designed to call a local agent's `/ioc` endpoint for a live VirusTotal verdict — no such agent is currently included in this repo, so this always shows a clear failure message rather than a result. Building a local agent for this (and for live SentinelOne sync in Vuln Delta) is a possible future addition; see Known limitations below.
 
 ---
 
@@ -131,17 +92,14 @@ Leave the agent running in a terminal. TALON's SYNC S1 FROM LOCAL AGENT and IOC 
 | File | What it is |
 |---|---|
 | `talon-hud.jsx` | **The dashboard itself.** Current, actively maintained. |
-| `sentinelone_local_agent.py` | Background server for live SentinelOne + VirusTotal data (see above). |
-| `sentinelone_export.py` | A one-shot alternative to the local agent: pulls SentinelOne vulns and writes an `.xlsx` (optionally auto-uploading to a Google Drive folder via a service account). Superseded by the local agent for most use, kept for anyone who'd rather not run a persistent server. |
-| `install_agent_service.sh` | One-time macOS setup to auto-start the local agent on login. |
+| `sentinelone_export.py` | A script that pulls SentinelOne vulns and writes an `.xlsx` (optionally auto-uploading to a Google Drive folder via a service account) — not currently included in this repo. |
 | `talon-standalone.html` | ⚠️ **Stale snapshot.** A self-contained HTML build (CDN-loaded React/Babel/SheetJS, no npm needed) made earlier in this project's life, before the AI-dependent widgets were removed and rewritten. It still references the old Console/Gmail/Slack/AI-driven widgets and does **not** reflect the current dashboard. Don't use it as-is — regenerate from the current `talon-hud.jsx` if a standalone build is needed again. |
 
 ---
 
 ## Known limitations
 
-- **No live CVE lookups.** Vuln Analyzer gives severity-based SLA/checklist guidance, not facts about a specific CVE. A real lookup (e.g. against NVD) would need the same local-agent treatment as SentinelOne/VirusTotal — not currently built.
+- **No live SentinelOne sync or VirusTotal lookups.** Vuln Delta is manual-entry/file-import only; IOC Quick-Check always shows a failure message. Both were designed around a local agent proxying vendor APIs (browsers can't call those APIs directly — no CORS, and a browser tab is the wrong place for API keys anyway), but no such agent is currently included in this repo.
+- **No live CVE lookups.** Vuln Analyzer gives severity-based SLA/checklist guidance, not facts about a specific CVE. A real lookup (e.g. against NVD) would need the same local-agent treatment mentioned above.
 - **No Gmail/Slack widgets.** Removed along with the AI dependency; there's no code-only way to answer "what's in my inbox right now" since it's live external data, not static knowledge.
 - **Threat Hunt query templates are generic.** They're a starting point based on common field names, not guaranteed to match your exact SentinelOne/LogScale schema version.
-- **Local agent is single-machine.** `localhost:8787` only resolves on whatever computer is running the agent — SYNC S1 FROM LOCAL AGENT and IOC Quick-Check won't work from a different device unless the agent is also running there.
-- **The local agent targets SentinelOne's Application Risk module** (`/web/api/v2.1/installed-applications`), the vulnerability surface most tenants have enabled. If your tenant instead runs the newer Singularity Vulnerability Management module, that endpoint differs — check your own console's API docs under Help → API Hub and adjust `S1_APPLICATIONS_PATH` / the field names in `sentinelone_local_agent.py`'s `_extract_row()` accordingly. Field extraction already tries several candidate field names defensively for this reason.
