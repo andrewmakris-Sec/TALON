@@ -407,6 +407,61 @@ function AgentStatusTag() {
   return <span className={`agent-tag ${cls}`}><span className="agent-dot" />{label}</span>;
 }
 
+/* live S1 count on the dashboard hub tile — polls the local agent directly so the hub
+   reflects current SentinelOne vuln counts without requiring a manual sync + snapshot. */
+function useLiveS1Count() {
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await fetch("http://localhost:8787/vulns", { cache: "no-store" });
+        if (!res.ok) throw new Error(`agent responded ${res.status}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (alive) setLive(computeS1Aggregate(data.rows || []).total);
+      } catch { if (alive) setLive(null); }
+    };
+    poll();
+    const id = setInterval(poll, 20000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  return live;
+}
+
+function computeS1Aggregate(rows) {
+  const sample = rows[0] || {};
+  const keyFor = (names) => Object.keys(sample).find((k) => names.some((n) => k.toLowerCase().includes(n)));
+  const epKey = keyFor(["endpoint"]), appKey = keyFor(["application", "software"]), sevKey = keyFor(["severity"]), stKey = keyFor(["status"]);
+  const cveKey = keyFor(["cve", "vulnerability", "vuln name", "vuln title"]);
+  const sevOrder = ["Critical", "High", "Medium", "Low"];
+  const seen = new Set(); const sev = { Critical: 0, High: 0, Medium: 0, Low: 0 }; const cveMap = {}; const appMap = {}; let total = 0;
+  rows.forEach((r) => {
+    const status = stKey ? String(r[stKey]).toLowerCase() : "";
+    if (/remediated|false positive/.test(status)) return;
+    const dk = `${epKey ? r[epKey] : ""}::${appKey ? r[appKey] : ""}`;
+    if (seen.has(dk)) return; seen.add(dk); total++;
+    const sevVal = sevKey ? String(r[sevKey]).trim().toLowerCase() : "";
+    const norm = sevOrder.find((s) => sevVal.startsWith(s.toLowerCase()));
+    if (norm) sev[norm] = (sev[norm] || 0) + 1;
+    if (cveKey) {
+      const cv = String(r[cveKey]).trim();
+      if (cv) { if (!cveMap[cv]) cveMap[cv] = { count: 0, sev: norm || "" }; cveMap[cv].count++; }
+    }
+    if (appKey) {
+      const av = String(r[appKey]).trim();
+      if (av) {
+        if (!appMap[av]) appMap[av] = { count: 0, worst: "" };
+        appMap[av].count++;
+        if (norm && (!appMap[av].worst || sevOrder.indexOf(norm) < sevOrder.indexOf(appMap[av].worst))) appMap[av].worst = norm;
+      }
+    }
+  });
+  const cves = Object.entries(cveMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([cve, v]) => ({ cve, count: v.count, sev: v.sev }));
+  const apps = Object.entries(appMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([app, v]) => ({ app, count: v.count, worst: v.worst }));
+  return { total, sev, cves, apps, epKey, sevKey, cveKey, appKey };
+}
+
 function VulnDelta() {
   const [hist, setHist] = useState([]); const [iru, setIru] = useState(""); const [s1, setS1] = useState("");
   const [s1Sev, setS1Sev] = useState(null); const [s1Cves, setS1Cves] = useState(null); const [s1Apps, setS1Apps] = useState(null);
@@ -415,35 +470,7 @@ function VulnDelta() {
   useEffect(() => { if (ready) store.set("mo:vulns", hist); }, [hist, ready]);
   const [driveSyncing, setDriveSyncing] = useState(false);
   const aggregateS1Rows = (rows, sourceLabel) => {
-    const sample = rows[0] || {};
-    const keyFor = (names) => Object.keys(sample).find((k) => names.some((n) => k.toLowerCase().includes(n)));
-    const epKey = keyFor(["endpoint"]), appKey = keyFor(["application", "software"]), sevKey = keyFor(["severity"]), stKey = keyFor(["status"]);
-    const cveKey = keyFor(["cve", "vulnerability", "vuln name", "vuln title"]);
-    const sevOrder = ["Critical", "High", "Medium", "Low"];
-    const seen = new Set(); const sev = { Critical: 0, High: 0, Medium: 0, Low: 0 }; const cveMap = {}; const appMap = {}; let total = 0;
-    rows.forEach((r) => {
-      const status = stKey ? String(r[stKey]).toLowerCase() : "";
-      if (/remediated|false positive/.test(status)) return;
-      const dk = `${epKey ? r[epKey] : ""}::${appKey ? r[appKey] : ""}`;
-      if (seen.has(dk)) return; seen.add(dk); total++;
-      const sevVal = sevKey ? String(r[sevKey]).trim().toLowerCase() : "";
-      const norm = sevOrder.find((s) => sevVal.startsWith(s.toLowerCase()));
-      if (norm) sev[norm] = (sev[norm] || 0) + 1;
-      if (cveKey) {
-        const cv = String(r[cveKey]).trim();
-        if (cv) { if (!cveMap[cv]) cveMap[cv] = { count: 0, sev: norm || "" }; cveMap[cv].count++; }
-      }
-      if (appKey) {
-        const av = String(r[appKey]).trim();
-        if (av) {
-          if (!appMap[av]) appMap[av] = { count: 0, worst: "" };
-          appMap[av].count++;
-          if (norm && (!appMap[av].worst || sevOrder.indexOf(norm) < sevOrder.indexOf(appMap[av].worst))) appMap[av].worst = norm;
-        }
-      }
-    });
-    const cves = Object.entries(cveMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([cve, v]) => ({ cve, count: v.count, sev: v.sev }));
-    const apps = Object.entries(appMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([app, v]) => ({ app, count: v.count, worst: v.worst }));
+    const { total, sev, cves, apps, epKey, sevKey, cveKey, appKey } = computeS1Aggregate(rows);
     setS1(String(total)); setS1Sev(sev); setS1Cves(cves.length ? cves : null); setS1Apps(apps.length ? apps : null);
     setNote(epKey || sevKey ? `${sourceLabel}: ${total} active (deduped Endpoint×App, filtered)${cveKey ? `, ${cves.length} distinct CVEs` : ""}${appKey ? `, ${apps.length} apps` : ""} → S1` : `${sourceLabel}: ${total} rows → S1 (no Endpoint/Severity columns found — raw count only)`);
   };
@@ -1686,11 +1713,15 @@ function ProcedureWriter() {
   );
 }
 
-function MOTile({ icon: I, label, sub, stat, onOpen }) {
+function MOTile({ icon: I, label, sub, stat, live, onOpen }) {
   return (
     <button className="motile" onClick={onOpen}>
       <span className="motile-ic"><I size={22} /></span>
-      <div className="motile-body"><span className="motile-lbl">{label}</span><span className="motile-sub">{sub}</span></div>
+      <div className="motile-body">
+        <span className="motile-lbl">{label}</span>
+        <span className="motile-sub">{sub}</span>
+        {live != null && <span className="motile-live"><span className="motile-live-dot" /> S1 LIVE {live}</span>}
+      </div>
       {stat != null && <span className="motile-stat">{stat}</span>}
       <span className="motile-go">OPEN ▸</span>
     </button>
@@ -1711,6 +1742,7 @@ const MO_TOOLS = [
 function MODashboard() {
   const [view, setView] = useState(null);
   const [stats, setStats] = useState({ vuln: null, base: 0, hunts: 0, pki: 0, vulnfix: 0, proc: 0, ioc: 0 });
+  const liveS1 = useLiveS1Count();
   useEffect(() => { (async () => {
     const v = await store.get("mo:vulns", []); const sy = await store.get("mo:syslog", { hist: [] }); const hu = await store.get("mo:hunts", []); const pk = await store.get("mo:pki", []); const vf = await store.get("mo:vulnfixes", []); const pr = await store.get("mo:procedures", []); const ic = await store.get("mo:iocchecks", []);
     const cur = v[v.length - 1];
@@ -1720,7 +1752,7 @@ function MODashboard() {
     <main className="mo-wrap">
       <div className={view ? "hide" : "mo-hub"}>
         <aside className="rail">
-          <MOTile icon={ShieldAlert} label="VULN DELTA" sub="IRU · S1 trend" stat={stats.vuln != null ? stats.vuln : "—"} onOpen={() => setView("vuln")} />
+          <MOTile icon={ShieldAlert} label="VULN DELTA" sub="IRU · S1 trend" stat={stats.vuln != null ? stats.vuln : "—"} live={liveS1} onOpen={() => setView("vuln")} />
           <MOTile icon={ShieldCheck} label="VULN ANALYZER" sub="CVE remediation" stat={stats.vulnfix} onOpen={() => setView("vulnfix")} />
           <MOTile icon={Ticket} label="TICKET OPS" sub="Pondurance · S1 · IT · InfoSec" stat={null} onOpen={() => setView("ticket")} />
           <MOTile icon={ClipboardList} label="PKI REPORT" sub="weekly checklist" stat={stats.pki} onOpen={() => setView("pki")} />
@@ -1912,6 +1944,8 @@ const CSS = `
 .motile-lbl{font-family:var(--fD);font-size:13px;font-weight:700;letter-spacing:.04em;color:var(--acc)}
 .motile-sub{font-family:var(--fM);font-size:9px;letter-spacing:.02em;color:var(--dim);margin-top:3px}
 .motile-stat{font-family:var(--fD);font-size:24px;font-weight:700;background:linear-gradient(135deg,var(--acc2),var(--acc));-webkit-background-clip:text;background-clip:text;color:transparent}
+.motile-live{display:inline-flex;align-items:center;gap:5px;margin-top:3px;font-family:var(--fM);font-size:8.5px;letter-spacing:.05em;color:#7CFFB2}
+.motile-live-dot{width:6px;height:6px;border-radius:50%;background:#7CFFB2;box-shadow:0 0 6px #7CFFB2;flex:none}
 .motile-go{position:absolute;bottom:8px;right:14px;font-family:var(--fM);font-size:8px;letter-spacing:.06em;color:var(--dim)}
 .mo-page{max-width:1040px;margin:0 auto}
 .mo-pagehd{display:flex;align-items:center;gap:16px;margin-bottom:18px}

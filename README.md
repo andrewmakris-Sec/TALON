@@ -37,6 +37,8 @@ TALON uses a small persistent key-value store (`window.storage`, wrapped by a `s
 ### Vuln Delta
 Tracks IRU (Kandji) and S1 (SentinelOne) vulnerability counts over time. Import via manual entry, a `.xlsx`/`.csv` file, or the **SYNC S1 FROM LOCAL AGENT** button (see [Local Agent](#local-agent) below). Auto-detects Endpoint/Application/Severity/CVE columns from whatever file you give it, dedupes by Endpoint×Application, and tracks severity breakdown + top CVEs/apps snapshot-over-snapshot. Exports full history to XLSX.
 
+While the local agent is running, the dashboard hub tile for Vuln Delta also shows a live **S1 LIVE `<count>`** badge — the current deduped active S1 vulnerability count pulled straight from SentinelOne, refreshed automatically every ~20s. This is independent of the manual snapshot history: it doesn't require opening the widget or clicking sync, it just reflects what SentinelOne has right now. Manual **SYNC S1 FROM LOCAL AGENT** + **LOG SNAPSHOT** inside the widget is still how you capture a point-in-time snapshot into history for deltas/exports.
+
 ### Vuln Analyzer
 Enter a CVE ID, affected app, and severity (plus an "actively exploited in the wild" toggle). Produces a standard SLA and remediation checklist:
 
@@ -130,3 +132,4 @@ Leave it running in a terminal. TALON's SYNC S1 FROM LOCAL AGENT and IOC Quick-C
 - **No Gmail/Slack widgets.** Removed along with the AI dependency; there's no code-only way to answer "what's in my inbox right now" since it's live external data, not static knowledge.
 - **Threat Hunt query templates are generic.** They're a starting point based on common field names, not guaranteed to match your exact SentinelOne/LogScale schema version.
 - **Local agent is single-machine.** `localhost:8787` only resolves on whatever computer is running the agent — SYNC S1 FROM LOCAL AGENT and IOC Quick-Check won't work from a different device unless the agent is also running there.
+- **The local agent targets SentinelOne's Application Risk module** (`/web/api/v2.1/installed-applications`), the vulnerability surface most tenants have enabled. If your tenant instead runs the newer Singularity Vulnerability Management module, that endpoint differs — check your own console's API docs under Help → API Hub and adjust `S1_APPLICATIONS_PATH` / the field names in `sentinelone_local_agent.py`'s `_extract_row()` accordingly. Field extraction already tries several candidate field names defensively for this reason.
