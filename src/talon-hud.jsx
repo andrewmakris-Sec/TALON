@@ -312,6 +312,39 @@ function Delta({ v }) {
   return v > 0 ? <span className="delta up">▲ {v}</span> : <span className="delta down">▼ {Math.abs(v)}</span>;
 }
 
+/* shared severity → CSS class mapping, used by SevChip/SevBar and severity-accented cards/rows everywhere */
+function sevClass(sev) {
+  const s = (sev || "").toLowerCase();
+  if (s === "critical") return "sev-critical";
+  if (s === "high") return "sev-high";
+  if (s === "medium") return "sev-medium";
+  if (s === "low") return "sev-low";
+  return "sev-none";
+}
+function SevChip({ sev }) { return <span className={`sev-chip ${sevClass(sev)}`}>{sev || "—"}</span>; }
+function srcClass(src) { return `src-${(src || "").toLowerCase().replace(/\s+/g, "-")}`; }
+function SrcChip({ src }) { return <span className={`src-chip ${srcClass(src)}`}>{src}</span>; }
+function anomalyClass(text) {
+  if (/spike/i.test(text)) return "a-spike";
+  if (/new active ip/i.test(text)) return "a-newip";
+  if (/new recurring/i.test(text)) return "a-newsig";
+  return "a-ok";
+}
+function iocTypeClass(type) { return `ioc-${(type || "").toLowerCase().replace(/\s+/g, "-")}`; }
+function SevBar({ crit = 0, high = 0, med = 0, low = 0 }) {
+  const total = crit + high + med + low;
+  if (!total) return null;
+  const pct = (n) => `${(n / total) * 100}%`;
+  return (
+    <div className="sev-bar">
+      {crit > 0 && <i className="b-crit" style={{ width: pct(crit) }} title={`${crit} critical`} />}
+      {high > 0 && <i className="b-high" style={{ width: pct(high) }} title={`${high} high`} />}
+      {med > 0 && <i className="b-med" style={{ width: pct(med) }} title={`${med} medium`} />}
+      {low > 0 && <i className="b-low" style={{ width: pct(low) }} title={`${low} low`} />}
+    </div>
+  );
+}
+
 function svgTrendChart(hist) {
   if (!hist.length) return `<div style="color:#556780">No history yet.</div>`;
   const W = 680, H = 220, PAD = 40;
@@ -525,13 +558,30 @@ function VulnDelta() {
         <span className="lm warn">MED {cur.s1Sev.Medium || 0}{arrow(dSev("Medium"))}</span>
         <span className="lm info">LOW {cur.s1Sev.Low || 0}{arrow(dSev("Low"))}</span>
       </div>}
+      {cur?.s1Sev && <SevBar crit={cur.s1Sev.Critical || 0} high={cur.s1Sev.High || 0} med={cur.s1Sev.Medium || 0} low={cur.s1Sev.Low || 0} />}
       {cur?.s1Cves?.length > 0 && <div className="log-anom">
         <span className="la-hd">TOP CVEs — S1</span>
-        {cur.s1Cves.map((c, i) => <div key={i} className="la-row">▸ {c.cve}{c.sev ? ` · ${c.sev}` : ""} — {c.count} endpoint{c.count > 1 ? "s" : ""}</div>)}
+        <div className="vuln-card-grid">
+          {cur.s1Cves.map((c, i) => (
+            <div key={i} className={`vuln-card ${sevClass(c.sev)}`}>
+              <span className="vuln-card-title">{c.cve}</span>
+              {c.sev && <SevChip sev={c.sev} />}
+              <span className="vuln-card-stat">{c.count}<span>endpoint{c.count > 1 ? "s" : ""}</span></span>
+            </div>
+          ))}
+        </div>
       </div>}
       {cur?.s1Apps?.length > 0 && <div className="log-anom">
         <span className="la-hd">TOP VULNERABLE APPS — S1</span>
-        {cur.s1Apps.map((a, i) => <div key={i} className="la-row">▸ {a.app}{a.worst ? ` · ${a.worst}` : ""} — {a.count} finding{a.count > 1 ? "s" : ""}</div>)}
+        <div className="vuln-card-grid">
+          {cur.s1Apps.map((a, i) => (
+            <div key={i} className={`vuln-card ${sevClass(a.worst)}`}>
+              <span className="vuln-card-title">{a.app}</span>
+              {a.worst && <SevChip sev={a.worst} />}
+              <span className="vuln-card-stat">{a.count}<span>finding{a.count > 1 ? "s" : ""}</span></span>
+            </div>
+          ))}
+        </div>
       </div>}
 
       {totals.length > 1 && <div className="vtrend"><span className="vt-lbl">TOTAL TREND</span><Sparkline data={totals} w={200} h={40} /></div>}
@@ -722,9 +772,9 @@ function TicketAnalyzer() {
         <span className="la-hd">RESOLVED TICKETS — {resolved.length}</span>
         {resolved.slice().reverse().slice(0, 12).map((r) => (
           <div key={r.ts} className="ticket-row">
-            <span className="mail-dot on" />
+            <SrcChip src={r.src} />
             <div className="ticket-txt">
-              <span className="ticket-sub">{r.src} — {r.ticket.slice(0, 70)}{r.ticket.length > 70 ? "…" : ""}</span>
+              <span className="ticket-sub">{r.ticket.slice(0, 70)}{r.ticket.length > 70 ? "…" : ""}</span>
               <span className="ticket-meta">{new Date(r.ts).toLocaleString()}{r.note ? ` · ${r.note}` : ""}</span>
             </div>
             <button className="ticket-del" onClick={() => removeResolved(r.ts)} aria-label="remove"><X size={12} /></button>
@@ -795,7 +845,7 @@ function SyslogAnalyzer() {
     <Panel label="SYSLOG BASELINE" right={`${hist.length} IN BASELINE`}>
       <label className="log-drop">{busy ? "ANALYZING…" : "IMPORT LOG FILE (.log / .txt)"}<input type="file" accept=".log,.txt,.csv" onChange={analyze} hidden /></label>
       {s && <div className="log-metrics"><span className="lm crit">CRIT {s.sev.crit}</span><span className="lm err">ERR {s.sev.error}</span><span className="lm warn">WARN {s.sev.warn}</span><span className="lm info">{s.total} LINES</span></div>}
-      {report && <div className="log-anom"><span className="la-hd">ANOMALIES</span>{report.anomalies.map((a, i) => <div key={i} className="la-row">▸ {a}</div>)}</div>}
+      {report && <div className="log-anom"><span className="la-hd">ANOMALIES</span>{report.anomalies.map((a, i) => <div key={i} className={`anom-row ${anomalyClass(a)}`}>▸ {a}</div>)}</div>}
       {expl && <div className="tk-out"><pre>{expl}</pre></div>}
     </Panel>
   );
@@ -871,7 +921,7 @@ function ThreatHuntOps() {
         <div className="hunt-parsed">
           {iocs.map((ioc, idx) => (
             <div key={idx} className="hunt-ioc-block">
-              <div className="hunt-ioc-hd"><span className="chip">{ioc.type}: {ioc.value}</span><button className="ticket-del" onClick={() => removeIoc(idx)} aria-label="remove"><X size={12} /></button></div>
+              <div className="hunt-ioc-hd"><span className={`chip ${iocTypeClass(ioc.type)}`}>{ioc.type}: {ioc.value}</span><button className="ticket-del" onClick={() => removeIoc(idx)} aria-label="remove"><X size={12} /></button></div>
               <div className="code-blk"><div className="code-bar"><span className="code-lang">SentinelOne Deep Visibility</span></div><pre className="code-pre"><code>{QUERY_TEMPLATES[ioc.type].s1(ioc.value)}</code></pre></div>
               <div className="code-blk"><div className="code-bar"><span className="code-lang">Falcon LogScale</span></div><pre className="code-pre"><code>{QUERY_TEMPLATES[ioc.type].logscale(ioc.value)}</code></pre></div>
             </div>
@@ -1563,9 +1613,9 @@ function PKIReport() {
         <span className="la-hd">REPORT HISTORY</span>
         {hist.slice().reverse().slice(0, 12).map((h) => (
           <div key={h.ts} className="ticket-row">
-            <span className="mail-dot on" />
             <div className="ticket-txt">
               <button className="pki-hist-link" onClick={() => loadWeek(h)}>{h.weekOf}</button>
+              <SevBar crit={h.s1Vulns.critical} high={h.s1Vulns.high} med={h.s1Vulns.medium} low={h.s1Vulns.low} />
               <span className="ticket-meta">S1 {h.s1Vulns.critical}/{h.s1Vulns.high}/{h.s1Vulns.medium}/{h.s1Vulns.low} · IRU {h.iruVulns.critical}/{h.iruVulns.high}/{h.iruVulns.medium}/{h.iruVulns.low}</span>
             </div>
             <button className="ticket-del" onClick={() => removeWeek(h.ts)} aria-label="remove"><X size={12} /></button>
@@ -1666,10 +1716,10 @@ function VulnAnalyzer() {
         <span className="la-hd">MITIGATED VULNS</span>
         {hist.slice().reverse().slice(0, 15).map((h) => (
           <div key={h.ts} className="ticket-row">
-            <span className="mail-dot on" />
+            <SevChip sev={h.severity} />
             <div className="ticket-txt">
               <span className="ticket-sub">{h.cve} — {h.app}</span>
-              <span className="ticket-meta">{h.severity} · {new Date(h.ts).toLocaleDateString()}{h.note ? ` · ${h.note}` : ""}</span>
+              <span className="ticket-meta">{new Date(h.ts).toLocaleDateString()}{h.note ? ` · ${h.note}` : ""}</span>
             </div>
             <button className="ticket-del" onClick={() => removeEntry(h.ts)} aria-label="remove"><X size={12} /></button>
           </div>
@@ -1728,7 +1778,9 @@ function IOCCheck() {
         <span className="la-hd">RECENT LOOKUPS</span>
         {hist.slice().reverse().slice(0, 12).map((h) => (
           <div key={h.ts} className="ticket-row">
-            <span className={`mail-dot ${h.found && h.malicious > 0 ? "on" : ""}`} />
+            <span className={`sev-chip ${!h.found ? "sev-none" : h.malicious > 0 ? "sev-critical" : h.suspicious > 0 ? "sev-medium" : "sev-low"}`}>
+              {!h.found ? "UNKNOWN" : h.malicious > 0 ? "MALICIOUS" : h.suspicious > 0 ? "SUSPICIOUS" : "CLEAN"}
+            </span>
             <div className="ticket-txt">
               <span className="ticket-sub">{h.value}</span>
               <span className="ticket-meta">{h.type} · {h.found ? `${h.malicious}/${h.total} malicious` : "not found"} · {new Date(h.ts).toLocaleString()}</span>
@@ -2045,8 +2097,54 @@ const CSS = `
 .ticket-txt{flex:1;display:flex;flex-direction:column;min-width:0}
 .ticket-sub{font-size:12px;color:var(--ice);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ticket-meta{font-family:var(--fM);font-size:9px;color:var(--dim)}
+.ticket-txt .sev-bar{height:4px;margin:3px 0}
 .ticket-del{background:none;border:none;color:var(--dim);cursor:pointer;opacity:.5;flex:none}
 .ticket-del:hover{color:var(--warn);opacity:1}
+
+/* ── shared severity design language — same red/orange/yellow/green semantics as the XLSX export ── */
+.sev-chip{display:inline-flex;align-items:center;gap:4px;font-family:var(--fM);font-size:9px;letter-spacing:.03em;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
+.sev-chip::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+.sev-chip.sev-critical{color:#ff6b6b;background:rgba(255,107,107,.14);border:1px solid rgba(255,107,107,.35)}
+.sev-chip.sev-high{color:#ffb347;background:rgba(255,179,71,.14);border:1px solid rgba(255,179,71,.35)}
+.sev-chip.sev-medium{color:#ffd479;background:rgba(255,212,121,.14);border:1px solid rgba(255,212,121,.35)}
+.sev-chip.sev-low{color:#7cffb2;background:rgba(124,255,178,.14);border:1px solid rgba(124,255,178,.35)}
+.sev-chip.sev-none{color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--faint)}
+
+.sev-bar{display:flex;height:8px;border-radius:99px;overflow:hidden;margin:2px 0 12px;background:rgba(255,255,255,.04)}
+.sev-bar i{display:block;height:100%}
+.sev-bar .b-crit{background:#ff6b6b}
+.sev-bar .b-high{background:#ffb347}
+.sev-bar .b-med{background:#ffd479}
+.sev-bar .b-low{background:#7cffb2}
+
+.vuln-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:12px}
+.vuln-card{position:relative;padding:9px 10px 8px;border-radius:10px;background:hsla(var(--hue),40%,50%,.05);border:1px solid var(--faint);border-left:3px solid var(--dim);display:flex;flex-direction:column;gap:5px;transition:transform .15s,border-color .15s}
+.vuln-card:hover{transform:translateY(-1px)}
+.vuln-card.sev-critical{border-left-color:#ff6b6b}
+.vuln-card.sev-high{border-left-color:#ffb347}
+.vuln-card.sev-medium{border-left-color:#ffd479}
+.vuln-card.sev-low{border-left-color:#7cffb2}
+.vuln-card-title{font-family:var(--fM);font-size:11px;color:var(--ice);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vuln-card-stat{font-family:var(--fD);font-size:20px;font-weight:800;color:var(--ice);line-height:1}
+.vuln-card-stat span{font-family:var(--fM);font-size:9px;font-weight:600;color:var(--dim);margin-left:4px}
+
+.src-chip{display:inline-block;font-family:var(--fM);font-size:8.5px;letter-spacing:.03em;font-weight:700;padding:2px 7px;border-radius:6px;flex:none}
+.src-chip.src-pondurance{color:#c9a3ff;background:rgba(201,163,255,.14);border:1px solid rgba(201,163,255,.35)}
+.src-chip.src-sentinelone{color:#5ecbff;background:rgba(94,203,255,.14);border:1px solid rgba(94,203,255,.35)}
+.src-chip.src-infosec{color:#ffb347;background:rgba(255,179,71,.14);border:1px solid rgba(255,179,71,.35)}
+.src-chip.src-it-support{color:#7cffb2;background:rgba(124,255,178,.14);border:1px solid rgba(124,255,178,.35)}
+
+.anom-row{display:flex;align-items:flex-start;gap:8px;padding:6px 8px;margin-bottom:4px;border-radius:8px;border-left:3px solid var(--faint);background:hsla(var(--hue),40%,50%,.04);font-family:var(--fM);font-size:10.5px;color:var(--ice);line-height:1.4}
+.anom-row.a-spike{border-left-color:#ff6b6b}
+.anom-row.a-newip{border-left-color:#ffb347}
+.anom-row.a-newsig{border-left-color:#ffd479}
+.anom-row.a-ok{border-left-color:#7cffb2}
+
+.chip.ioc-ip-address{color:#5ecbff;background:rgba(94,203,255,.14);border-color:rgba(94,203,255,.35)}
+.chip.ioc-file-hash{color:#c9a3ff;background:rgba(201,163,255,.14);border-color:rgba(201,163,255,.35)}
+.chip.ioc-domain{color:#ffb347;background:rgba(255,179,71,.14);border-color:rgba(255,179,71,.35)}
+.chip.ioc-process-name{color:#ffd479;background:rgba(255,212,121,.14);border-color:rgba(255,212,121,.35)}
+.chip.ioc-username{color:#7cffb2;background:rgba(124,255,178,.14);border-color:rgba(124,255,178,.35)}
 .pki-weekbar{margin-bottom:14px}
 .pki-section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--faint)}
 .pki-hd{display:flex;align-items:center;gap:8px;margin-bottom:7px}
