@@ -380,7 +380,7 @@ function buildVulnReportHTML(hist) {
     ["S1 Low", prev?.s1Sev?.Low, cur?.s1Sev?.Low],
   ];
   const rowsHtml = rows.map(([label, p, c]) => `<tr><td>${label}</td><td>${fmt(p)}</td><td>${fmt(c)}</td><td class="${dcls(c, p)}">${dstr(c, p)}</td></tr>`).join("");
-  const cveRows = (cur?.s1Cves || []).map((x) => `<tr><td>${x.cve}</td><td>${x.sev || "—"}</td><td>${x.count}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No CVE-level data in this snapshot</td></tr>`;
+  const cveRows = (cur?.s1Cves || []).map((x) => `<tr><td>${x.cve}</td><td>${x.app || "—"}</td><td>${x.sev || "—"}</td><td>${x.count}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No CVE-level data in this snapshot</td></tr>`;
   const appRows = (cur?.s1Apps || []).map((x) => `<tr><td>${x.app}</td><td>${x.worst || "—"}</td><td>${x.count}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No application-level data in this snapshot</td></tr>`;
   const histRows = hist.map((h) => `<tr><td>${new Date(h.ts).toLocaleDateString()}</td><td>${h.iru}</td><td>${h.s1}</td><td>${h.s1Sev?.Critical ?? "—"}</td><td>${h.s1Sev?.High ?? "—"}</td><td>${h.s1Sev?.Medium ?? "—"}</td><td>${h.s1Sev?.Low ?? "—"}</td></tr>`).join("");
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>TALON Vuln Delta Report</title>
@@ -407,7 +407,7 @@ button{background:#0e1826;border:1px solid #1c2a3a;color:#5ecbff;font-family:'Je
 <h2>TREND — TOTAL FINDINGS OVER TIME</h2>
 ${svgTrendChart(hist)}
 <h2>TOP CVEs (CURRENT SNAPSHOT)</h2>
-<table><tr><th>CVE / Vulnerability</th><th>Severity</th><th>Endpoints</th></tr>${cveRows}</table>
+<table><tr><th>CVE / Vulnerability</th><th>Application</th><th>Severity</th><th>Endpoints</th></tr>${cveRows}</table>
 <h2>TOP VULNERABLE APPLICATIONS (CURRENT SNAPSHOT)</h2>
 <table><tr><th>Application</th><th>Worst Severity</th><th>Findings</th></tr>${appRows}</table>
 <h2>FULL SNAPSHOT HISTORY</h2>
@@ -457,7 +457,11 @@ function computeS1Aggregate(rows) {
     if (norm) sev[norm] = (sev[norm] || 0) + 1;
     if (cveKey) {
       const cv = String(r[cveKey]).trim();
-      if (cv) { if (!cveMap[cv]) cveMap[cv] = { count: 0, sev: norm || "" }; cveMap[cv].count++; }
+      if (cv) {
+        if (!cveMap[cv]) cveMap[cv] = { count: 0, sev: norm || "", apps: new Set() };
+        cveMap[cv].count++;
+        if (appKey) { const av = String(r[appKey]).trim(); if (av) cveMap[cv].apps.add(av); }
+      }
     }
     if (appKey) {
       const av = String(r[appKey]).trim();
@@ -468,7 +472,7 @@ function computeS1Aggregate(rows) {
       }
     }
   });
-  const cves = Object.entries(cveMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([cve, v]) => ({ cve, count: v.count, sev: v.sev }));
+  const cves = Object.entries(cveMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([cve, v]) => ({ cve, count: v.count, sev: v.sev, app: [...v.apps].join(", ") }));
   const apps = Object.entries(appMap).sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([app, v]) => ({ app, count: v.count, worst: v.worst }));
   return { total, sev, cves, apps, epKey, sevKey, cveKey, appKey };
 }
@@ -565,6 +569,7 @@ function VulnDelta() {
           {cur.s1Cves.map((c, i) => (
             <div key={i} className={`vuln-card ${sevClass(c.sev)}`}>
               <span className="vuln-card-title">{c.cve}</span>
+              {c.app && <span className="vuln-card-app">{c.app}</span>}
               {c.sev && <SevChip sev={c.sev} />}
               <span className="vuln-card-stat">{c.count}<span>endpoint{c.count > 1 ? "s" : ""}</span></span>
             </div>
@@ -1127,8 +1132,8 @@ function buildVulnDeltaXlsx(hist) {
     [{ v: "S1 Low", s: S.LOW }, { v: prev?.s1Sev?.Low ?? "", s: S.BORDERED }, { v: cur.s1Sev?.Low ?? "", s: S.LOW }, { v: dv(cur.s1Sev?.Low, prev?.s1Sev?.Low), s: xlsxDeltaStyle(dv(cur.s1Sev?.Low, prev?.s1Sev?.Low)) }],
   ];
   const cveSheetRows = [
-    [{ v: "CVE / Vulnerability", s: S.HEADER }, { v: "Severity", s: S.HEADER }, { v: "Endpoints", s: S.HEADER }],
-    ...(cur.s1Cves || []).map((c) => [{ v: c.cve, s: S.BORDERED }, { v: c.sev || "", s: xlsxSeverityStyle(c.sev) }, { v: c.count, s: S.BORDERED }]),
+    [{ v: "CVE / Vulnerability", s: S.HEADER }, { v: "Application", s: S.HEADER }, { v: "Severity", s: S.HEADER }, { v: "Endpoints", s: S.HEADER }],
+    ...(cur.s1Cves || []).map((c) => [{ v: c.cve, s: S.BORDERED }, { v: c.app || "", s: S.BORDERED }, { v: c.sev || "", s: xlsxSeverityStyle(c.sev) }, { v: c.count, s: S.BORDERED }]),
   ];
   const appSheetRows = [
     [{ v: "Application", s: S.HEADER }, { v: "Worst Severity", s: S.HEADER }, { v: "Findings", s: S.HEADER }],
@@ -1152,7 +1157,7 @@ function buildVulnDeltaXlsx(hist) {
     { name: "xl/_rels/workbook.xml.rels", data: xlsxWorkbookRelsXML(sheetNames.length) },
     { name: "xl/styles.xml", data: xlsxStylesXML() },
     { name: "xl/worksheets/sheet1.xml", data: xlsxSheetXML(summaryRows, [24, 12, 12, 10]) },
-    { name: "xl/worksheets/sheet2.xml", data: xlsxSheetXML(cveSheetRows, [22, 12, 12]) },
+    { name: "xl/worksheets/sheet2.xml", data: xlsxSheetXML(cveSheetRows, [22, 18, 12, 12]) },
     { name: "xl/worksheets/sheet3.xml", data: xlsxSheetXML(appSheetRows, [22, 16, 12]) },
     { name: "xl/worksheets/sheet4.xml", data: xlsxSheetXML(historyRows, [12, 8, 8, 10, 8, 10, 8], hasChart ? "rId1" : null) },
   ];
@@ -2125,6 +2130,7 @@ const CSS = `
 .vuln-card.sev-medium{border-left-color:#ffd479}
 .vuln-card.sev-low{border-left-color:#7cffb2}
 .vuln-card-title{font-family:var(--fM);font-size:11px;color:var(--ice);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vuln-card-app{font-family:var(--fM);font-size:9px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:-3px}
 .vuln-card-stat{font-family:var(--fD);font-size:20px;font-weight:800;color:var(--ice);line-height:1}
 .vuln-card-stat span{font-family:var(--fM);font-size:9px;font-weight:600;color:var(--dim);margin-left:4px}
 
