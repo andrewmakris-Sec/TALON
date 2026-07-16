@@ -496,26 +496,16 @@ function VulnDelta() {
   };
   const exportXLSX = () => {
     if (!hist.length) { setNote("Log at least one snapshot first"); return; }
-    const wb = XLSX.utils.book_new();
-    const dv = (c, p) => (c != null && p != null ? c - p : "");
-    const summary = [
-      ["Metric", "Previous", "Current", "Delta"],
-      ["IRU Active", prev?.iru ?? "", cur.iru, dv(cur.iru, prev?.iru)],
-      ["S1 Active (deduped)", prev?.s1 ?? "", cur.s1, dv(cur.s1, prev?.s1)],
-      ["S1 Critical", prev?.s1Sev?.Critical ?? "", cur.s1Sev?.Critical ?? "", dv(cur.s1Sev?.Critical, prev?.s1Sev?.Critical)],
-      ["S1 High", prev?.s1Sev?.High ?? "", cur.s1Sev?.High ?? "", dv(cur.s1Sev?.High, prev?.s1Sev?.High)],
-      ["S1 Medium", prev?.s1Sev?.Medium ?? "", cur.s1Sev?.Medium ?? "", dv(cur.s1Sev?.Medium, prev?.s1Sev?.Medium)],
-      ["S1 Low", prev?.s1Sev?.Low ?? "", cur.s1Sev?.Low ?? "", dv(cur.s1Sev?.Low, prev?.s1Sev?.Low)],
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
-    const cveRows = [["CVE / Vulnerability", "Severity", "Endpoints"], ...(cur.s1Cves || []).map((c) => [c.cve, c.sev || "", c.count])];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cveRows), "Top CVEs");
-    const appRows = [["Application", "Worst Severity", "Findings"], ...(cur.s1Apps || []).map((a) => [a.app, a.worst || "", a.count])];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(appRows), "Top Applications");
-    const histRows = [["Date", "IRU", "S1", "Critical", "High", "Medium", "Low"], ...hist.map((h) => [new Date(h.ts).toLocaleDateString(), h.iru, h.s1, h.s1Sev?.Critical ?? "", h.s1Sev?.High ?? "", h.s1Sev?.Medium ?? "", h.s1Sev?.Low ?? ""])];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(histRows), "History");
-    XLSX.writeFile(wb, `MO_Vuln_Delta_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    setNote("XLSX exported — " + new Date().toLocaleTimeString());
+    try {
+      const bytes = buildVulnDeltaXlsx(hist);
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `MO_Vuln_Delta_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      setNote("XLSX exported — " + new Date().toLocaleTimeString());
+    } catch (ex) { setNote("XLSX export failed — " + ex.message); }
   };
   return (
     <Panel label="VULN DELTA // IRU · S1" right={`${hist.length} SNAPSHOTS`}>
@@ -945,6 +935,193 @@ function buildZip(files) {
 
 const SLIDE_W = 12192000, SLIDE_H = 6858000;
 function escXML(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;"); }
+
+/* ── pure-JS styled .xlsx generator (Vuln Delta export) — hand-rolled, same
+   buildZip/escXML primitives as the PPTX/DOCX generators below. The bundled
+   'xlsx' library's community build silently drops cell styling on write
+   (verified: setting cell.s + {cellStyles:true} produces no style output at
+   all), so real fills/fonts/borders and a native chart require building the
+   OOXML by hand instead. ── */
+const XLSX_STY = { DEFAULT: 0, HEADER: 1, BOLD: 2, CRIT: 3, HIGH: 4, MED: 5, LOW: 6, BAD: 8, GOOD: 9, BORDERED: 10, TITLE: 11 };
+function xlsxSeverityStyle(sev) {
+  const s = (sev || "").toLowerCase();
+  if (s === "critical") return XLSX_STY.CRIT;
+  if (s === "high") return XLSX_STY.HIGH;
+  if (s === "medium") return XLSX_STY.MED;
+  if (s === "low") return XLSX_STY.LOW;
+  return XLSX_STY.DEFAULT;
+}
+function xlsxDeltaStyle(v) { return v > 0 ? XLSX_STY.BAD : v < 0 ? XLSX_STY.GOOD : XLSX_STY.DEFAULT; }
+function xlsxColLetter(n) { let s = ""; n++; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; }
+function xlsxStylesXML() {
+  const fonts = [
+    `<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FFB91C1C"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FFC2410C"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FFA16207"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="11"/><color rgb="FF15803D"/><name val="Calibri"/></font>`,
+    `<font><b/><sz val="16"/><color rgb="FF1F2937"/><name val="Calibri"/></font>`,
+  ];
+  const fills = [
+    `<fill><patternFill patternType="none"/></fill>`,
+    `<fill><patternFill patternType="gray125"/></fill>`,
+    `<fill><patternFill patternType="solid"><fgColor rgb="FF1F2937"/><bgColor indexed="64"/></patternFill></fill>`,
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFFEE2E2"/><bgColor indexed="64"/></patternFill></fill>`,
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFFFEDD5"/><bgColor indexed="64"/></patternFill></fill>`,
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFFEF9C3"/><bgColor indexed="64"/></patternFill></fill>`,
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFDCFCE7"/><bgColor indexed="64"/></patternFill></fill>`,
+  ];
+  const thinBorder = `<border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right><top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border>`;
+  const borders = [`<border><left/><right/><top/><bottom/><diagonal/></border>`, thinBorder];
+  const xfs = [
+    `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`,
+    `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>`,
+    `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>`,
+    `<xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>`,
+    `<xf numFmtId="0" fontId="4" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>`,
+    `<xf numFmtId="0" fontId="5" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>`,
+    `<xf numFmtId="0" fontId="6" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>`,
+    `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>`,
+    `<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>`,
+    `<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1"/>`,
+    `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>`,
+    `<xf numFmtId="0" fontId="7" fillId="0" borderId="0" xfId="0" applyFont="1"/>`,
+  ];
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    `<fonts count="${fonts.length}">${fonts.join("")}</fonts>` +
+    `<fills count="${fills.length}">${fills.join("")}</fills>` +
+    `<borders count="${borders.length}">${borders.join("")}</borders>` +
+    `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
+    `<cellXfs count="${xfs.length}">${xfs.join("")}</cellXfs>` +
+    `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+}
+function xlsxSheetXML(rows, colWidths, drawingRelId) {
+  const rowsXML = rows.map((row, ri) => {
+    const r = ri + 1;
+    const cells = row.map((cell, ci) => {
+      if (cell == null) return "";
+      const ref = `${xlsxColLetter(ci)}${r}`;
+      const s = cell.s != null ? ` s="${cell.s}"` : "";
+      if (typeof cell.v === "number") return `<c r="${ref}"${s}><v>${cell.v}</v></c>`;
+      return `<c r="${ref}" t="inlineStr"${s}><is><t xml:space="preserve">${escXML(cell.v ?? "")}</t></is></c>`;
+    }).join("");
+    return `<row r="${r}">${cells}</row>`;
+  }).join("");
+  const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
+  const cols = colWidths ? `<cols>${colWidths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("")}</cols>` : "";
+  const dim = `A1:${xlsxColLetter(Math.max(0, maxCols - 1))}${Math.max(1, rows.length)}`;
+  const drawing = drawingRelId ? `<drawing r:id="${drawingRelId}"/>` : "";
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="${dim}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${cols}<sheetData>${rowsXML}</sheetData>${drawing}</worksheet>`;
+}
+function xlsxContentTypesXML(sheetCount, hasChart) {
+  const overrides = [];
+  for (let i = 1; i <= sheetCount; i++) overrides.push(`<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
+  if (hasChart) {
+    overrides.push(`<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`);
+    overrides.push(`<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides.join("")}<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+}
+function xlsxRootRelsXML() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+}
+function xlsxAppXML(sheetNames) {
+  const titles = sheetNames.map((n) => `<vt:lpstr>${escXML(n)}</vt:lpstr>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>TALON HUD</Application><TitlesOfParts><vt:vector size="${sheetNames.length}" baseType="lpstr">${titles}</vt:vector></TitlesOfParts><Company>Mechanical Orchard</Company></Properties>`;
+}
+function xlsxWorkbookXML(sheetNames) {
+  const sheets = sheetNames.map((name, i) => `<sheet name="${escXML(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets}</sheets></workbook>`;
+}
+function xlsxWorkbookRelsXML(sheetCount) {
+  const rels = [];
+  for (let i = 1; i <= sheetCount; i++) rels.push(`<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i}.xml"/>`);
+  rels.push(`<Relationship Id="rId${sheetCount + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`);
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join("")}</Relationships>`;
+}
+function xlsxSheetRelsXML(drawingTarget) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="${drawingTarget}"/></Relationships>`;
+}
+function xlsxDrawingXML() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>18</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>22</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+}
+function xlsxDrawingRelsXML() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>`;
+}
+function xlsxLineSeries(idx, name, color, sheetName, catCol, valCol, categories, values) {
+  const catRange = `${sheetName}!$${catCol}$2:$${catCol}$${categories.length + 1}`;
+  const valRange = `${sheetName}!$${valCol}$2:$${valCol}$${values.length + 1}`;
+  const catPts = categories.map((c, i) => `<c:pt idx="${i}"><c:v>${escXML(c)}</c:v></c:pt>`).join("");
+  const valPts = values.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join("");
+  return `<c:ser><c:idx val="${idx}"/><c:order val="${idx}"/><c:tx><c:v>${escXML(name)}</c:v></c:tx><c:spPr><a:ln w="28575"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/><c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr></c:marker><c:cat><c:strRef><c:f>${escXML(catRange)}</c:f><c:strCache><c:ptCount val="${categories.length}"/>${catPts}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>${escXML(valRange)}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${values.length}"/>${valPts}</c:numCache></c:numRef></c:val><c:smooth val="0"/></c:ser>`;
+}
+function xlsxLineChartXML(title, sheetName, categories, seriesDefs) {
+  const series = seriesDefs.map((s, i) => xlsxLineSeries(i, s.name, s.color, sheetName, s.catCol, s.valCol, categories, s.values)).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escXML(title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/><c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${series}<c:marker val="1"/><c:axId val="111111111"/><c:axId val="222222222"/></c:lineChart><c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:txPr><a:bodyPr rot="-2700000" vert="horz"/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="800"/></a:pPr><a:endParaRPr lang="en-US"/></a:p></c:txPr><c:crossAx val="222222222"/></c:catAx><c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:crossAx val="111111111"/></c:valAx></c:plotArea><c:legend><c:legendPos val="b"/></c:legend><c:plotVisOnly val="1"/></c:chart></c:chartSpace>`;
+}
+function buildVulnDeltaXlsx(hist) {
+  const cur = hist[hist.length - 1], prev = hist[hist.length - 2];
+  const dv = (c, p) => (c != null && p != null ? c - p : "");
+  const S = XLSX_STY;
+  const summaryRows = [
+    [{ v: "MO VULN DELTA — SUMMARY", s: S.TITLE }],
+    [],
+    [{ v: "Metric", s: S.HEADER }, { v: "Previous", s: S.HEADER }, { v: "Current", s: S.HEADER }, { v: "Delta", s: S.HEADER }],
+    [{ v: "IRU Active", s: S.BORDERED }, { v: prev?.iru ?? "", s: S.BORDERED }, { v: cur.iru, s: S.BORDERED }, { v: dv(cur.iru, prev?.iru), s: xlsxDeltaStyle(dv(cur.iru, prev?.iru)) }],
+    [{ v: "S1 Active (deduped)", s: S.BORDERED }, { v: prev?.s1 ?? "", s: S.BORDERED }, { v: cur.s1, s: S.BORDERED }, { v: dv(cur.s1, prev?.s1), s: xlsxDeltaStyle(dv(cur.s1, prev?.s1)) }],
+    [{ v: "S1 Critical", s: S.CRIT }, { v: prev?.s1Sev?.Critical ?? "", s: S.BORDERED }, { v: cur.s1Sev?.Critical ?? "", s: S.CRIT }, { v: dv(cur.s1Sev?.Critical, prev?.s1Sev?.Critical), s: xlsxDeltaStyle(dv(cur.s1Sev?.Critical, prev?.s1Sev?.Critical)) }],
+    [{ v: "S1 High", s: S.HIGH }, { v: prev?.s1Sev?.High ?? "", s: S.BORDERED }, { v: cur.s1Sev?.High ?? "", s: S.HIGH }, { v: dv(cur.s1Sev?.High, prev?.s1Sev?.High), s: xlsxDeltaStyle(dv(cur.s1Sev?.High, prev?.s1Sev?.High)) }],
+    [{ v: "S1 Medium", s: S.MED }, { v: prev?.s1Sev?.Medium ?? "", s: S.BORDERED }, { v: cur.s1Sev?.Medium ?? "", s: S.MED }, { v: dv(cur.s1Sev?.Medium, prev?.s1Sev?.Medium), s: xlsxDeltaStyle(dv(cur.s1Sev?.Medium, prev?.s1Sev?.Medium)) }],
+    [{ v: "S1 Low", s: S.LOW }, { v: prev?.s1Sev?.Low ?? "", s: S.BORDERED }, { v: cur.s1Sev?.Low ?? "", s: S.LOW }, { v: dv(cur.s1Sev?.Low, prev?.s1Sev?.Low), s: xlsxDeltaStyle(dv(cur.s1Sev?.Low, prev?.s1Sev?.Low)) }],
+  ];
+  const cveSheetRows = [
+    [{ v: "CVE / Vulnerability", s: S.HEADER }, { v: "Severity", s: S.HEADER }, { v: "Endpoints", s: S.HEADER }],
+    ...(cur.s1Cves || []).map((c) => [{ v: c.cve, s: S.BORDERED }, { v: c.sev || "", s: xlsxSeverityStyle(c.sev) }, { v: c.count, s: S.BORDERED }]),
+  ];
+  const appSheetRows = [
+    [{ v: "Application", s: S.HEADER }, { v: "Worst Severity", s: S.HEADER }, { v: "Findings", s: S.HEADER }],
+    ...(cur.s1Apps || []).map((a) => [{ v: a.app, s: S.BORDERED }, { v: a.worst || "", s: xlsxSeverityStyle(a.worst) }, { v: a.count, s: S.BORDERED }]),
+  ];
+  const historyRows = [
+    [{ v: "Date", s: S.HEADER }, { v: "IRU", s: S.HEADER }, { v: "S1", s: S.HEADER }, { v: "Critical", s: S.HEADER }, { v: "High", s: S.HEADER }, { v: "Medium", s: S.HEADER }, { v: "Low", s: S.HEADER }],
+    ...hist.map((h) => [
+      { v: new Date(h.ts).toLocaleDateString(), s: S.BORDERED },
+      { v: h.iru, s: S.BORDERED }, { v: h.s1, s: S.BORDERED },
+      { v: h.s1Sev?.Critical ?? "", s: S.CRIT }, { v: h.s1Sev?.High ?? "", s: S.HIGH },
+      { v: h.s1Sev?.Medium ?? "", s: S.MED }, { v: h.s1Sev?.Low ?? "", s: S.LOW },
+    ]),
+  ];
+  const hasChart = hist.length > 1;
+  const sheetNames = ["Summary", "Top CVEs", "Top Applications", "History"];
+  const files = [
+    { name: "[Content_Types].xml", data: xlsxContentTypesXML(sheetNames.length, hasChart) },
+    { name: "_rels/.rels", data: xlsxRootRelsXML() },
+    { name: "xl/workbook.xml", data: xlsxWorkbookXML(sheetNames) },
+    { name: "xl/_rels/workbook.xml.rels", data: xlsxWorkbookRelsXML(sheetNames.length) },
+    { name: "xl/styles.xml", data: xlsxStylesXML() },
+    { name: "xl/worksheets/sheet1.xml", data: xlsxSheetXML(summaryRows, [24, 12, 12, 10]) },
+    { name: "xl/worksheets/sheet2.xml", data: xlsxSheetXML(cveSheetRows, [22, 12, 12]) },
+    { name: "xl/worksheets/sheet3.xml", data: xlsxSheetXML(appSheetRows, [22, 16, 12]) },
+    { name: "xl/worksheets/sheet4.xml", data: xlsxSheetXML(historyRows, [12, 8, 8, 10, 8, 10, 8], hasChart ? "rId1" : null) },
+  ];
+  if (hasChart) {
+    files.push({ name: "xl/worksheets/_rels/sheet4.xml.rels", data: xlsxSheetRelsXML("../drawings/drawing1.xml") });
+    files.push({ name: "xl/drawings/drawing1.xml", data: xlsxDrawingXML() });
+    files.push({ name: "xl/drawings/_rels/drawing1.xml.rels", data: xlsxDrawingRelsXML() });
+    files.push({ name: "xl/charts/chart1.xml", data: xlsxLineChartXML("IRU vs S1 Active Vulnerabilities", "History",
+      hist.map((h) => new Date(h.ts).toLocaleDateString()),
+      [
+        { name: "IRU", color: "5ecbff", catCol: "A", valCol: "B", values: hist.map((h) => h.iru) },
+        { name: "S1", color: "ffb347", catCol: "A", valCol: "C", values: hist.map((h) => h.s1) },
+      ]) });
+  }
+  files.push({ name: "docProps/core.xml", data: coreXML("MO Vuln Delta") });
+  files.push({ name: "docProps/app.xml", data: xlsxAppXML(sheetNames) });
+  return buildZip(files);
+}
+
 function contentTypesXML(n) { let o = []; for (let i = 1; i <= n; i++) o.push(`<Override PartName="/ppt/slides/slide${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`);
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/ppt/presProps.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presProps+xml"/><Override PartName="/ppt/viewProps.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml"/><Override PartName="/ppt/tableStyles.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>${o.join("")}</Types>`; }
 function rootRelsXML() { return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`; }
