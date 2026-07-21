@@ -117,6 +117,8 @@ python3 virustotal_local_agent.py
 
 Leave the agent running in a terminal. IOC Quick-Check will work while it's up, and show a clear error if it isn't.
 
+**Auto-start (macOS only, optional):** `install_vt_agent_service.sh` registers the agent as a `launchd` service so it starts automatically on login instead of needing a terminal window open. Prompts for your key once, verifies it against the real VirusTotal API before installing anything, builds the service file with Python's `plistlib` (safe against special characters in the key), and starts it immediately. Run `./install_vt_agent_service.sh --uninstall` to remove it.
+
 **Note:** this only covers VirusTotal/IOC lookups. There is currently no local agent for live SentinelOne sync — Vuln Delta is manual-entry/file-import only (see Known limitations).
 
 ---
@@ -127,6 +129,7 @@ Leave the agent running in a terminal. IOC Quick-Check will work while it's up, 
 |---|---|
 | `talon-hud.jsx` | **The dashboard itself.** Current, actively maintained. |
 | `virustotal_local_agent.py` | Background server for live VirusTotal IOC lookups (see [Local Agent](#local-agent) above). |
+| `install_vt_agent_service.sh` | One-time macOS setup to auto-start the VirusTotal agent on login. |
 | `sentinelone_export.py` | A script that pulls SentinelOne vulns and writes an `.xlsx` (optionally auto-uploading to a Google Drive folder via a service account) — not currently included in this repo. |
 | `talon-standalone.html` | ⚠️ **Stale snapshot.** A self-contained HTML build (CDN-loaded React/Babel/SheetJS, no npm needed) made earlier in this project's life, before the AI-dependent widgets were removed and rewritten. It still references the old Console/Gmail/Slack/AI-driven widgets and does **not** reflect the current dashboard. Don't use it as-is — regenerate from the current `talon-hud.jsx` if a standalone build is needed again. |
 
