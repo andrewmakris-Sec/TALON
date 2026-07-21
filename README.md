@@ -83,7 +83,41 @@ Weekly checklist covering S1/IRU vuln counts, compliance scores, and free-text s
 Fill in Purpose / Scope / Trigger / Prerequisites / Procedure steps / Rollback / References as separate fields; **BUILD DRAFT FROM SECTIONS** assembles them into a formatted document with ALL-CAPS section headers. The draft is freely editable by hand afterward. Exports to DOCX or a printable HTML (for Save-as-PDF). Saved procedures are reloadable for editing.
 
 ### IOC Quick-Check
-Paste a hash, IP, or domain (type auto-detected). Designed to call a local agent's `/ioc` endpoint for a live VirusTotal verdict — no such agent is currently included in this repo, so this always shows a clear failure message rather than a result. Building a local agent for this (and for live SentinelOne sync in Vuln Delta) is a possible future addition; see Known limitations below.
+Paste a hash, IP, or domain (type auto-detected). Calls the [Local Agent's](#local-agent) `/ioc` endpoint, which queries VirusTotal directly and returns a malicious/suspicious/harmless/undetected breakdown, plus one-click links to VirusTotal, and for IPs, AbuseIPDB and Shodan. Requires the local agent running with `VIRUSTOTAL_API_KEY` set — shows a clear failure message if it isn't.
+
+---
+
+## Local Agent
+
+VirusTotal's API can't be called directly from the browser — no CORS on their side, and an API key shouldn't ship to a browser tab anyway. `virustotal_local_agent.py` solves this: a small Python HTTP server that runs on your own machine, holds your API key, and exposes a couple of `localhost`-only endpoints the dashboard can call safely.
+
+**Endpoints it serves** (`http://localhost:8787`):
+| Endpoint | Returns |
+|---|---|
+| `GET /health` | `{"status":"ok","services":{"virustotal":bool}}` — used by the green/red status dot |
+| `GET /ioc?value=X` | VirusTotal verdict for a hash/IP/domain (type auto-detected) |
+
+**Setup:**
+
+Option A — environment variable (re-run in every new terminal session):
+```bash
+export VIRUSTOTAL_API_KEY="<your key>"
+pip install requests
+python3 virustotal_local_agent.py
+```
+
+Option B — `.env` file (set once, never re-type it):
+```bash
+cp .env.example .env
+# edit .env and fill in your real VIRUSTOTAL_API_KEY
+pip install requests
+python3 virustotal_local_agent.py
+```
+`.env` is git-ignored — it never gets committed. A real exported environment variable always takes priority over `.env` if both are set.
+
+Leave the agent running in a terminal. IOC Quick-Check will work while it's up, and show a clear error if it isn't.
+
+**Note:** this only covers VirusTotal/IOC lookups. There is currently no local agent for live SentinelOne sync — Vuln Delta is manual-entry/file-import only (see Known limitations).
 
 ---
 
@@ -92,6 +126,7 @@ Paste a hash, IP, or domain (type auto-detected). Designed to call a local agent
 | File | What it is |
 |---|---|
 | `talon-hud.jsx` | **The dashboard itself.** Current, actively maintained. |
+| `virustotal_local_agent.py` | Background server for live VirusTotal IOC lookups (see [Local Agent](#local-agent) above). |
 | `sentinelone_export.py` | A script that pulls SentinelOne vulns and writes an `.xlsx` (optionally auto-uploading to a Google Drive folder via a service account) — not currently included in this repo. |
 | `talon-standalone.html` | ⚠️ **Stale snapshot.** A self-contained HTML build (CDN-loaded React/Babel/SheetJS, no npm needed) made earlier in this project's life, before the AI-dependent widgets were removed and rewritten. It still references the old Console/Gmail/Slack/AI-driven widgets and does **not** reflect the current dashboard. Don't use it as-is — regenerate from the current `talon-hud.jsx` if a standalone build is needed again. |
 
@@ -99,7 +134,7 @@ Paste a hash, IP, or domain (type auto-detected). Designed to call a local agent
 
 ## Known limitations
 
-- **No live SentinelOne sync or VirusTotal lookups.** Vuln Delta is manual-entry/file-import only; IOC Quick-Check always shows a failure message. Both were designed around a local agent proxying vendor APIs (browsers can't call those APIs directly — no CORS, and a browser tab is the wrong place for API keys anyway), but no such agent is currently included in this repo.
+- **No live SentinelOne sync.** Vuln Delta is manual-entry/file-import only. IOC Quick-Check's VirusTotal lookups do work if `virustotal_local_agent.py` is running (see [Local Agent](#local-agent)), but there is currently no equivalent agent for SentinelOne.
 - **No live CVE lookups.** Vuln Analyzer gives severity-based SLA/checklist guidance, not facts about a specific CVE. A real lookup (e.g. against NVD) would need the same local-agent treatment mentioned above.
 - **No Gmail/Slack widgets.** Removed along with the AI dependency; there's no code-only way to answer "what's in my inbox right now" since it's live external data, not static knowledge.
 - **Threat Hunt query templates are generic.** They're a starting point based on common field names, not guaranteed to match your exact SentinelOne/LogScale schema version.
