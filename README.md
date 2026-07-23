@@ -21,6 +21,7 @@ TALON uses a small persistent key-value store (`window.storage`, wrapped by a `s
 |---|---|
 | `mo:vulns` | Vuln Delta's IRU/S1 count history + severity/CVE/app breakdowns |
 | `mo:vulnfixes` | Vuln Analyzer's mitigated-CVE log |
+| `mo:vulnopen` | Vuln Analyzer's open CVEs still inside their SLA window (see SLA tracking below) |
 | `mo:tickets` | Ticket Ops' resolved-ticket log |
 | `mo:syslog` | Syslog Baseline's rolling log-summary history (used as the anomaly baseline) |
 | `mo:hunts` | Threat Hunt Ops' hunt log |
@@ -47,7 +48,7 @@ Enter a CVE ID, affected app, and severity (plus an "actively exploited in the w
 | Medium | ~90 days |
 | Low | ~180 days |
 
-This is static, code-based guidance — it does not look up the CVE anywhere or reason about the specific vulnerability. Logs mitigated vulns to a history exportable as XLSX.
+This is static, code-based guidance — it does not look up the CVE anywhere or reason about the specific vulnerability. Building the checklist also adds the CVE to an **open vulns / SLA tracking** list (keyed by CVE+app) with a live due-date badge (`N DAYS LEFT` / `DUE TODAY` / `OVERDUE ND`), computed from the severity's SLA (or the 24-48h actively-exploited window). Logging a mitigation removes it from that list and moves it to the mitigated-vulns history, exportable as XLSX. Any vuln past its due date also drives the dashboard's overdue count (see digest banner below).
 
 ### Ticket Ops
 Pick a source (Pondurance/S1/InfoSec/IT Support) and a category. Each category carries a real MITRE ATT&CK mapping (where applicable) and a standard set of response steps, e.g.:
@@ -84,6 +85,16 @@ Fill in Purpose / Scope / Trigger / Prerequisites / Procedure steps / Rollback /
 
 ### IOC Quick-Check
 Paste a hash, IP, or domain (type auto-detected). Calls the [Local Agent's](#local-agent) `/ioc` endpoint, which queries VirusTotal directly and returns a malicious/suspicious/harmless/undetected breakdown, plus one-click links to VirusTotal, and for IPs, AbuseIPDB and Shodan. Requires the local agent running with `VIRUSTOTAL_API_KEY` set — shows a clear failure message if it isn't.
+
+---
+
+## Dashboard-level features
+
+These live on the hub screen itself, above/below the widget tiles — not inside any one widget.
+
+- **Status digest banner.** Top-left, above the tiles. Shows a green "ALL CLEAR" when nothing needs attention, or a red alert listing overdue SLAs (from Vuln Analyzer) and/or an elevated/critical Syslog Baseline status — click either to jump straight to that widget.
+- **Global search.** Top-right search bar. Searches across tickets, mitigated/open vulns, hunts, PKI reports, procedures, IOC checks, and syslog imports by title/CVE/asset text; click a result to open that widget directly. Purely local — it just scans the same stored history each widget already keeps, no new data is collected.
+- **Backup / restore.** Bottom of the hub screen. **EXPORT ALL DATA** downloads every widget's stored history as one timestamped `.json` file. **RESTORE** loads that file back in (with a confirmation prompt, since it overwrites current data) — useful before clearing browser storage, switching machines, or just keeping a snapshot.
 
 ---
 

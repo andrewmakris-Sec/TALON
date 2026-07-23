@@ -3,7 +3,8 @@ import * as XLSX from "xlsx";
 import {
   Check, X, Loader2,
   ArrowLeft,
-  ShieldAlert, ShieldCheck, Ticket, ScrollText, Crosshair, ClipboardList, FilePenLine, Search
+  ShieldAlert, ShieldCheck, Ticket, ScrollText, Crosshair, ClipboardList, FilePenLine, Search,
+  Download, Upload, AlertTriangle
 } from "lucide-react";
 
 /* ══════════════════════════════════════════════════════════════
@@ -788,6 +789,16 @@ function TicketAnalyzer() {
       </div>}
     </Panel>
   );
+}
+
+/* pure severity-based status classification for the latest syslog snapshot —
+   shared between SyslogAnalyzer's own report and the hub digest banner, which
+   only has the stored history (no live "report" object) to work from. */
+function syslogStatusWord(hist) {
+  if (!hist.length) return null;
+  const { sev, total } = hist[hist.length - 1];
+  const errRate = total ? (sev.error + sev.crit) / total : 0;
+  return sev.crit > 0 ? "CRITICAL" : errRate > 0.15 ? "ELEVATED" : errRate > 0.05 ? "WATCH" : "NOMINAL";
 }
 
 function interpretReport(report) {
@@ -1645,20 +1656,38 @@ const VULN_REMEDIATION_CHECKLIST = [
   "Verify remediation via rescan or manual confirmation",
   "Document evidence and close with a resolution note",
 ];
+/* shared with the hub digest banner, which computes overdue counts straight
+   from stored mo:vulnopen without mounting VulnAnalyzer's own logic */
+function computeVulnDueTs(severity, exploited, fromTs) {
+  if (exploited) return fromTs + 2 * 86400000; // upper bound of the 24-48h accelerated window
+  return fromTs + (VULN_SLA[severity]?.days || 90) * 86400000;
+}
+function vulnOpenKey(cve, app) { return `${(cve || "").trim().toLowerCase()}::${(app || "").trim().toLowerCase()}`; }
+function DueBadge({ dueTs }) {
+  const days = Math.ceil((dueTs - Date.now()) / 86400000);
+  if (days < 0) return <span className="sev-chip sev-critical">OVERDUE {Math.abs(days)}D</span>;
+  if (days === 0) return <span className="sev-chip sev-high">DUE TODAY</span>;
+  return <span className="sev-chip sev-low">{days}D LEFT</span>;
+}
 
 function VulnAnalyzer() {
   const [cve, setCve] = useState(""); const [app, setApp] = useState(""); const [severity, setSeverity] = useState("High");
   const [exploited, setExploited] = useState(false);
   const [desc, setDesc] = useState(""); const [out, setOut] = useState(""); const [copied, setCopied] = useState(false);
   const [note, setNote] = useState(""); const [hist, setHist] = useState([]); const [ready, setReady] = useState(false); const [saveNote, setSaveNote] = useState("");
+  const [openVulns, setOpenVulns] = useState([]); const [openReady, setOpenReady] = useState(false);
 
   useEffect(() => { (async () => { setHist(await store.get("mo:vulnfixes", [])); setReady(true); })(); }, []);
   useEffect(() => { if (ready) store.set("mo:vulnfixes", hist); }, [hist, ready]);
+  useEffect(() => { (async () => { setOpenVulns(await store.get("mo:vulnopen", [])); setOpenReady(true); })(); }, []);
+  useEffect(() => { if (openReady) store.set("mo:vulnopen", openVulns); }, [openVulns, openReady]);
 
   const analyze = () => {
     if (!cve.trim() && !desc.trim()) return;
     const sla = VULN_SLA[severity];
-    const dueDate = new Date(Date.now() + sla.days * 86400000).toLocaleDateString();
+    const now = Date.now();
+    const dueTs = computeVulnDueTs(severity, exploited, now);
+    const dueDate = new Date(dueTs).toLocaleDateString();
     const lines = [
       `CVE: ${cve.trim() || "(none provided)"}`,
       `AFFECTED APPLICATION: ${app.trim() || "(none provided)"}`,
@@ -1675,14 +1704,25 @@ function VulnAnalyzer() {
       ...VULN_REMEDIATION_CHECKLIST.map((s, i) => `${i + 1}. ${s}`),
     ].filter((l) => l !== null);
     setOut(lines.join("\n"));
+    if (cve.trim() || app.trim()) {
+      const key = vulnOpenKey(cve, app);
+      setOpenVulns((ov) => {
+        const rest = ov.filter((v) => v.key !== key);
+        return [...rest.slice(-99), { key, ts: now, cve: cve.trim() || "—", app: app.trim() || "—", severity, exploited, dueTs }];
+      });
+    }
   };
   const copy = () => { navigator.clipboard?.writeText(out).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }); };
   const logMitigated = () => {
     if (!cve.trim() && !app.trim()) return;
     setHist((h) => [...h.slice(-99), { ts: Date.now(), cve: cve.trim() || "—", app: app.trim() || "—", severity, note: saveNote.trim(), analysis: out }]);
+    setOpenVulns((ov) => ov.filter((v) => v.key !== vulnOpenKey(cve, app)));
     setCve(""); setApp(""); setDesc(""); setOut(""); setSaveNote(""); setSeverity("High"); setExploited(false);
   };
   const removeEntry = (ts) => setHist((h) => h.filter((x) => x.ts !== ts));
+  const removeOpenVuln = (key) => setOpenVulns((ov) => ov.filter((v) => v.key !== key));
+  const openSorted = openVulns.slice().sort((a, b) => a.dueTs - b.dueTs);
+  const overdueCount = openVulns.filter((v) => v.dueTs < Date.now()).length;
   const exportXLSX = () => {
     if (!hist.length) { setNote("Log at least one mitigated vuln first"); return; }
     const wb = XLSX.utils.book_new();
@@ -1714,6 +1754,20 @@ function VulnAnalyzer() {
         <button className="mini-btn wide" disabled={!hist.length} onClick={exportXLSX}>EXPORT XLSX</button>
       </div>
       {note && <div className="vnote">{note}</div>}
+      {openSorted.length > 0 && <div className="hunt-hist">
+        <span className="la-hd">OPEN VULNS — SLA TRACKING ({openSorted.length}{overdueCount > 0 ? `, ${overdueCount} OVERDUE` : ""})</span>
+        {openSorted.map((v) => (
+          <div key={v.key} className="ticket-row">
+            <SevChip sev={v.severity} />
+            <div className="ticket-txt">
+              <span className="ticket-sub">{v.cve} — {v.app}{v.exploited ? " · ACTIVELY EXPLOITED" : ""}</span>
+              <span className="ticket-meta">Due {new Date(v.dueTs).toLocaleDateString()}</span>
+            </div>
+            <DueBadge dueTs={v.dueTs} />
+            <button className="ticket-del" onClick={() => removeOpenVuln(v.key)} aria-label="remove"><X size={12} /></button>
+          </div>
+        ))}
+      </div>}
       {hist.length > 0 && <div className="log-metrics" style={{ marginTop: 10 }}>
         {sevCounts.map(({ s, n }) => <span key={s} className={`lm ${s === "Critical" ? "crit" : s === "High" ? "err" : s === "Medium" ? "warn" : "info"}`}>{s.toUpperCase()} {n}</span>)}
       </div>}
@@ -1927,17 +1981,97 @@ const MO_TOOLS = [
   { key: "ioc", label: "IOC QUICK-CHECK", comp: <IOCCheck /> },
 ];
 
+const TALON_BACKUP_KEYS = ["mo:vulns", "mo:vulnfixes", "mo:vulnopen", "mo:tickets", "mo:syslog", "mo:hunts", "mo:pki", "mo:procedures", "mo:iocchecks"];
+
 function MODashboard() {
   const [view, setView] = useState(null);
-  const [stats, setStats] = useState({ vuln: null, base: 0, hunts: 0, pki: 0, vulnfix: 0, proc: 0, ioc: 0 });
+  const [stats, setStats] = useState({ vuln: null, base: 0, hunts: 0, pki: 0, vulnfix: 0, proc: 0, ioc: 0, overdue: 0, syslogStatus: null });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const restoreFileRef = useRef(null);
+
   useEffect(() => { (async () => {
-    const v = await store.get("mo:vulns", []); const sy = await store.get("mo:syslog", { hist: [] }); const hu = await store.get("mo:hunts", []); const pk = await store.get("mo:pki", []); const vf = await store.get("mo:vulnfixes", []); const pr = await store.get("mo:procedures", []); const ic = await store.get("mo:iocchecks", []);
+    const v = await store.get("mo:vulns", []); const sy = await store.get("mo:syslog", { hist: [] }); const hu = await store.get("mo:hunts", []); const pk = await store.get("mo:pki", []); const vf = await store.get("mo:vulnfixes", []); const pr = await store.get("mo:procedures", []); const ic = await store.get("mo:iocchecks", []); const vo = await store.get("mo:vulnopen", []);
     const cur = v[v.length - 1];
-    setStats({ vuln: cur ? cur.iru + cur.s1 : null, base: (sy.hist || []).length, hunts: hu.length, pki: pk.length, vulnfix: vf.length, proc: pr.length, ioc: ic.length });
+    const overdue = vo.filter((x) => x.dueTs < Date.now()).length;
+    setStats({ vuln: cur ? cur.iru + cur.s1 : null, base: (sy.hist || []).length, hunts: hu.length, pki: pk.length, vulnfix: vf.length, proc: pr.length, ioc: ic.length, overdue, syslogStatus: syslogStatusWord(sy.hist || []) });
   })(); }, [view]);
+
+  useEffect(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) { setSearchResults([]); return; }
+    let alive = true;
+    (async () => {
+      const [tickets, vulnfixes, vulnopen, hunts, pki, procedures, ioc, syslogData] = await Promise.all([
+        store.get("mo:tickets", []), store.get("mo:vulnfixes", []), store.get("mo:vulnopen", []),
+        store.get("mo:hunts", []), store.get("mo:pki", []), store.get("mo:procedures", []),
+        store.get("mo:iocchecks", []), store.get("mo:syslog", { hist: [] }),
+      ]);
+      const results = [];
+      tickets.forEach((t) => { if (`${t.src} ${t.ticket} ${t.note || ""}`.toLowerCase().includes(q)) results.push({ key: "ticket", label: "TICKET OPS", title: t.ticket, meta: `${t.src} · ${new Date(t.ts).toLocaleDateString()}` }); });
+      vulnfixes.forEach((v) => { if (`${v.cve} ${v.app} ${v.note || ""}`.toLowerCase().includes(q)) results.push({ key: "vulnfix", label: "VULN ANALYZER", title: `${v.cve} — ${v.app}`, meta: `Mitigated · ${new Date(v.ts).toLocaleDateString()}` }); });
+      vulnopen.forEach((v) => { if (`${v.cve} ${v.app}`.toLowerCase().includes(q)) results.push({ key: "vulnfix", label: "VULN ANALYZER", title: `${v.cve} — ${v.app}`, meta: `Open · due ${new Date(v.dueTs).toLocaleDateString()}` }); });
+      hunts.forEach((h) => { if (`${h.threat} ${h.findings}`.toLowerCase().includes(q)) results.push({ key: "hunt", label: "THREAT HUNT OPS", title: h.threat, meta: `${h.iocs} IOCs · ${new Date(h.ts).toLocaleDateString()}` }); });
+      pki.forEach((p) => { if ((p.weekOf || "").toLowerCase().includes(q)) results.push({ key: "pki", label: "PKI REPORT", title: p.weekOf, meta: `S1 ${p.s1Vulns.critical}/${p.s1Vulns.high}/${p.s1Vulns.medium}/${p.s1Vulns.low}` }); });
+      procedures.forEach((p) => { if ((p.title || "").toLowerCase().includes(q)) results.push({ key: "proc", label: "PROCEDURE WRITER", title: p.title, meta: new Date(p.ts).toLocaleDateString() }); });
+      ioc.forEach((i) => { if ((i.value || "").toLowerCase().includes(q)) results.push({ key: "ioc", label: "IOC QUICK-CHECK", title: i.value, meta: `${i.type} · ${new Date(i.ts).toLocaleDateString()}` }); });
+      (syslogData.hist || []).forEach((s) => { if ((s.name || "").toLowerCase().includes(q)) results.push({ key: "syslog", label: "SYSLOG BASELINE", title: s.name, meta: new Date(s.ts).toLocaleDateString() }); });
+      if (alive) setSearchResults(results.slice(0, 20));
+    })();
+    return () => { alive = false; };
+  }, [searchQuery]);
+
+  const exportAllData = async () => {
+    const data = {};
+    for (const k of TALON_BACKUP_KEYS) data[k] = await store.get(k, null);
+    const blob = new Blob([JSON.stringify({ app: "TALON", exportedAt: Date.now(), data }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `TALON_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  };
+  const importAllData = async (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    try {
+      const parsed = JSON.parse(await f.text());
+      if (!parsed?.data) throw new Error("not a TALON backup file");
+      if (!window.confirm("This will overwrite all current TALON data with this backup file's contents. Continue?")) return;
+      for (const [k, v] of Object.entries(parsed.data)) { if (v != null) await store.set(k, v); }
+      window.location.reload();
+    } catch (ex) {
+      window.alert("Restore failed — " + ex.message);
+    } finally { e.target.value = ""; }
+  };
+
+  const hasAlert = stats.overdue > 0 || stats.syslogStatus === "CRITICAL" || stats.syslogStatus === "ELEVATED";
+
   return (
     <main className="mo-wrap">
       <div className={view ? "hide" : "mo-hub"}>
+        <div className="mo-hubtop">
+          <div className={`mo-digest ${hasAlert ? "mo-digest-alert" : "mo-digest-ok"}`}>
+            {hasAlert ? <AlertTriangle size={13} /> : <Check size={13} />}
+            {stats.overdue > 0 && <button className="mo-digest-item" onClick={() => setView("vulnfix")}>{stats.overdue} SLA{stats.overdue > 1 ? "S" : ""} OVERDUE</button>}
+            {(stats.syslogStatus === "CRITICAL" || stats.syslogStatus === "ELEVATED") && <button className="mo-digest-item" onClick={() => setView("syslog")}>SYSLOG: {stats.syslogStatus}</button>}
+            {!hasAlert && <span>ALL CLEAR</span>}
+          </div>
+          <div className="mo-search-wrap">
+            <div className="mo-search"><Search size={14} /><input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search tickets, CVEs, procedures, IOCs, hunts…" />{searchQuery && <button className="mo-search-clear" onClick={() => setSearchQuery("")} aria-label="clear"><X size={12} /></button>}</div>
+            {searchResults.length > 0 && (
+              <div className="mo-search-results">
+                {searchResults.map((r, i) => (
+                  <button key={i} className="mo-search-result" onClick={() => { setView(r.key); setSearchQuery(""); }}>
+                    <span className="mo-sr-src">{r.label}</span>
+                    <span className="mo-sr-title">{r.title}</span>
+                    <span className="mo-sr-meta">{r.meta}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {searchQuery.trim() && searchResults.length === 0 && <div className="mo-search-results"><div className="mo-search-empty">No matches</div></div>}
+          </div>
+        </div>
         <aside className="rail">
           <MOTile icon={ShieldAlert} label="VULN DELTA" sub="IRU · S1 trend" stat={stats.vuln != null ? stats.vuln : "—"} onOpen={() => setView("vuln")} />
           <MOTile icon={ShieldCheck} label="VULN ANALYZER" sub="CVE remediation" stat={stats.vulnfix} onOpen={() => setView("vulnfix")} />
@@ -1951,6 +2085,11 @@ function MODashboard() {
           <MOTile icon={FilePenLine} label="PROCEDURE WRITER" sub="formal write-ups" stat={stats.proc} onOpen={() => setView("proc")} />
           <MOTile icon={Search} label="IOC QUICK-CHECK" sub="hash · IP · domain" stat={stats.ioc} onOpen={() => setView("ioc")} />
         </aside>
+        <div className="mo-databar">
+          <button className="mo-data-btn" onClick={exportAllData}><Download size={12} /> EXPORT ALL DATA</button>
+          <button className="mo-data-btn" onClick={() => restoreFileRef.current?.click()}><Upload size={12} /> RESTORE</button>
+          <input ref={restoreFileRef} type="file" accept=".json" onChange={importAllData} hidden />
+        </div>
       </div>
       {MO_TOOLS.map((t) => (
         <div key={t.key} className={view === t.key ? "mo-page" : "hide"}>
@@ -2171,6 +2310,29 @@ const CSS = `
 .mo-wrap{position:relative;z-index:3;max-width:1480px;margin:0 auto;padding:18px 30px}
 .hide{display:none!important}
 .mo-hub{display:grid;grid-template-columns:290px 1fr 290px;gap:24px;align-items:center}
+.mo-hubtop{grid-column:1/-1;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.mo-digest{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-family:var(--fD);font-size:10.5px;font-weight:700;letter-spacing:.04em;padding:9px 14px;border-radius:11px;border:1px solid var(--line);flex:none}
+.mo-digest-ok{color:#7cffb2;background:rgba(124,255,178,.1);border-color:rgba(124,255,178,.32)}
+.mo-digest-alert{color:#ff8a8a;background:rgba(255,90,90,.12);border-color:rgba(255,90,90,.38);box-shadow:0 0 14px rgba(255,90,90,.18)}
+.mo-digest-item{background:rgba(0,0,0,.28);border:1px solid currentColor;color:inherit;font-family:var(--fD);font-size:10px;font-weight:700;letter-spacing:.03em;padding:5px 10px;border-radius:8px;cursor:pointer}
+.mo-digest-item:hover{background:rgba(255,255,255,.08)}
+.mo-search-wrap{position:relative;flex:1;min-width:220px}
+.mo-search{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.32);border:1px solid var(--line);border-radius:11px;padding:9px 12px;color:var(--dim)}
+.mo-search:focus-within{border-color:var(--acc);box-shadow:0 0 10px hsla(var(--hue),90%,60%,.2)}
+.mo-search input{flex:1;background:none;border:none;outline:none;color:var(--ice);font-family:var(--fM);font-size:12.5px}
+.mo-search input::placeholder{color:var(--dim)}
+.mo-search-clear{background:none;border:none;color:var(--dim);cursor:pointer;display:grid;place-items:center;flex:none}
+.mo-search-clear:hover{color:var(--ice)}
+.mo-search-results{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.55);max-height:320px;overflow-y:auto;padding:6px}
+.mo-search-result{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;background:none;border:none;color:var(--ice);cursor:pointer;padding:8px 10px;border-radius:8px}
+.mo-search-result:hover{background:hsla(var(--hue),90%,60%,.12)}
+.mo-sr-src{font-family:var(--fM);font-size:8.5px;letter-spacing:.06em;color:var(--acc)}
+.mo-sr-title{font-family:var(--fD);font-size:12.5px;font-weight:600;color:var(--ice)}
+.mo-sr-meta{font-family:var(--fM);font-size:9.5px;color:var(--dim)}
+.mo-search-empty{padding:10px;font-family:var(--fM);font-size:11px;color:var(--dim);text-align:center}
+.mo-databar{grid-column:1/-1;display:flex;justify-content:center;gap:10px}
+.mo-data-btn{display:flex;align-items:center;gap:7px;background:rgba(0,0,0,.3);border:1px solid var(--line);color:var(--dim);cursor:pointer;font-family:var(--fD);font-size:10px;font-weight:700;letter-spacing:.04em;padding:8px 14px;border-radius:9px}
+.mo-data-btn:hover{color:var(--acc);border-color:var(--acc);background:hsla(var(--hue),90%,60%,.1)}
 .motile{position:relative;display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;background:var(--panel);border:1px solid var(--line);color:var(--ice);padding:16px 16px 20px;border-radius:16px;transition:transform .18s,box-shadow .18s,border-color .18s}
 .motile:hover{transform:translateY(-2px);box-shadow:0 0 22px hsla(var(--hue),90%,60%,.22);border-color:var(--acc)}
 .motile-ic{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;border:1px solid var(--line);color:var(--acc);background:radial-gradient(circle,hsla(var(--hue),90%,60%,.14),transparent 70%);box-shadow:inset 0 0 10px hsla(var(--hue),90%,60%,.1);flex:none}
@@ -2219,7 +2381,7 @@ const CSS = `
 .mo-page .mini-btn{font-size:16px;padding:8px 14px}
 .mo-page .log-drop{font-size:12px;padding:20px}
 .mo-page .lm.crit,.mo-page .lm.err,.mo-page .lm.warn,.mo-page .lm.info{font-size:12px}
-@media (max-width:1040px){.mo-hub{grid-template-columns:1fr}.mo-hub .rail{flex-direction:column}.mo-wrap{padding:16px 18px}}
+@media (max-width:1040px){.mo-hub{grid-template-columns:1fr}.mo-hub .rail{flex-direction:column}.mo-wrap{padding:16px 18px}.mo-hubtop{flex-direction:column;align-items:stretch}.mo-digest{justify-content:center}}
 
 .topbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;max-width:1480px;margin:0 auto;padding:16px 30px;border-bottom:1px solid var(--line)}
 .tb-left{display:flex;align-items:center;gap:12px}
